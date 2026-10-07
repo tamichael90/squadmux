@@ -36,12 +36,25 @@ telescope, completion) so hand edits feel like an IDE.
 
 ## Requirements
 
-- Linux x86_64 (other platforms: not yet)
-- tmux >= 3.3, git, python3, curl, tar, GNU coreutils (`timeout`, `readlink -f`), flock (util-linux)
-- Node.js with npm (Mason installs vtsls and bash-language-server from npm)
-- A C compiler (gcc) for treesitter parsers
-- fd and fzf (optional, installed by `install.sh`): enable the folder picker on "+ add folder"
-- Claude Code; the status dots come from its hooks
+Common: tmux >= 3.3, bash >= 4, git, python3, curl, tar, Node.js with npm (Mason installs vtsls and
+bash-language-server from npm), a C compiler for treesitter parsers, and Claude Code (the status dots
+come from its hooks). fd and fzf are optional and installed by `install.sh`; they enable the folder
+picker on "+ add folder".
+
+**Linux x86_64:** GNU coreutils (`timeout`, `readlink -f`) and `flock` (util-linux) are normally present;
+install `gcc` or `build-essential` if missing.
+
+**macOS (arm64 and x86_64):** supported, tested on ________. The system bash is 3.2 and the BSD tools
+lack `timeout`, `readlink -f` and `flock`, so first run `xcode-select --install` (compiler, git,
+python3), then:
+
+```sh
+brew install bash coreutils flock tmux python git node
+```
+
+`install.sh` tells you which of those are still missing. Start tmux from a shell that has Homebrew on
+its PATH so the panels find the Homebrew bash; the download assets are the official arm64 / x86_64
+builds of each tool.
 
 ## Install
 
@@ -58,6 +71,9 @@ appends marker-guarded blocks to `~/.tmux.conf` and `~/.bashrc`, merges `claude/
 `~/.claude/settings.json` (backed up first), and runs the Neovim plugin / parser / server install.
 Note that the tmux block turns `mouse` on globally and the bash block adds `alias vim=nvim`; drop
 either line from the block if you do not want it.
+
+On macOS the shell block goes to `~/.zshrc` (when `$SHELL` is zsh) and downloaded archives are
+cleared of the Gatekeeper quarantine attribute before extraction.
 
 Options: `--dry-run`, `--skip-nvim` (configs and agentnav only), `--reinstall-tools`.
 Environment: `AGENTNAV_PREFIX` (default `~/.local`), `AGENTNAV_CONFIG` (default `~/.config/agentnav`),
@@ -128,9 +144,10 @@ Removes the symlinks, the marker blocks and the agentnav hooks. Binaries in `~/.
 
 ## Limitations
 
-- Linux x86_64 only; the installer refuses elsewhere. agentnav.sh relies on GNU coreutils (`timeout`,
-  `readlink -f`, `find -delete`), `flock` (util-linux), bash 4+ and Python 3; on stock macOS the missing
-  `timeout` alone would make every viewer probe fail.
+- Linux x86_64 and macOS arm64 / x86_64 only; the installer refuses elsewhere. agentnav.sh needs bash 4+
+  (it refuses to start under macOS's bash 3.2), Python 3, and GNU `timeout` (or `gtimeout`); without
+  `timeout` files open in `less` instead of Neovim, and without `flock` concurrent pane splits are not
+  serialised.
 - Built for Claude Code: teammate discovery reads `~/.claude/teams`, status dots need its hooks.
 - Format on save for TypeScript uses tsserver's formatter via vtsls, not Prettier; drop the `typescript`
   entries from `format_on_save` in `nvim/init.lua` if your project formats differently.
