@@ -12,11 +12,11 @@ telescope, completion) so hand edits feel like an IDE.
 ```
 ┌─ AGENTS ──────┬────────────────────────────────────────────┐
 │ ▸ ● lead      │                                            │
-│   ◆ px-eng    │   (main slot: the selected agent, or the   │
+│   ◆ engineer  │   (main slot: the selected agent, or the   │
 │   ○ reviewer  │    Neovim viewer with the selected file)   │
 ├─ CONTEXT ─────┤                                            │
 │  + add folder │                                            │
-│ ▾ palinx/     │                                            │
+│ ▾ my-app/     │                                            │
 │   ▸ packages/ │                                            │
 │     README.md │                                            │
 └───────────────┴────────────────────────────────────────────┘
