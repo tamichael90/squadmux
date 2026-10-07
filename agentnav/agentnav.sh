@@ -199,7 +199,7 @@ clear_state() {
   setopt -u @agentnav_main
   if alive "$(opt @agentnav_viewer)"; then
     # A viewer that stays (stop, or a refused :qa) keeps its pane id and socket so the next start reuses it.
-    find "$STATE" -mindepth 1 ! -name nvim.sock -delete
+    find "$STATE" -mindepth 1 ! -name 'nvim-*.sock' -delete
   else
     setopt -u @agentnav_viewer
     rm -rf "$STATE"
@@ -467,22 +467,27 @@ ctx_scroll() {
 }
 
 # ---- viewer --------------------------------------------------------------
-# Files open in a Neovim instance that lives in the viewer pane and is reused across opens
-# (listening on $STATE/nvim.sock), so unsaved buffers survive. Without nvim, less is used.
+# Files open in a Neovim instance that lives in the viewer pane and is reused across opens, so
+# unsaved buffers survive. Each instance listens on its own $STATE/nvim-<id>.sock, recorded in the
+# pane option @agentnav_sock: nvim unlinks its socket path on exit, so a slowly exiting instance
+# must never share the path with its successor. Without nvim, less is used.
+
+nvim_sock() { popt "$(opt @agentnav_viewer)" @agentnav_sock; }
 
 # nvim_rpc <seconds> <args>: RPC to the viewer's nvim, bounded so an nvim stuck on a prompt
 # (swap dialog, -- More --) can't hang the panels. Exit 124 means it is up but not answering.
 nvim_rpc() {
   local t="$1"
   shift
-  timeout "$t" "$NVIM" --server "$STATE/nvim.sock" "$@" </dev/null
+  timeout "$t" "$NVIM" --server "$(nvim_sock)" "$@" </dev/null
 }
 
 # 0 = nvim answering, 124 = up but blocked, 1 = no nvim behind the socket.
 # A blocked verdict is cached for 5s so repeated Enters don't each sit out the probe.
 nvim_state() {
-  local since
-  [ -n "$NVIM" ] && [ -S "$STATE/nvim.sock" ] || return 1
+  local since sock
+  sock="$(nvim_sock)"
+  [ -n "$NVIM" ] && [ -n "$sock" ] && [ -S "$sock" ] || return 1
   since="$(cat "$STATE/nvim.blocked" 2>/dev/null || echo 0)"
   [ $(($(date +%s) - since)) -lt 5 ] && return 124
   nvim_rpc 1 --remote-expr 1 >/dev/null 2>&1
@@ -493,9 +498,10 @@ nvim_state() {
   esac
 }
 
+# viewer_cmd <file> <sock>
 viewer_cmd() {
   if [ -n "$NVIM" ]; then
-    printf '%q --listen %q %q' "$NVIM" "$STATE/nvim.sock" "$1"
+    printf '%q --listen %q %q' "$NVIM" "$2" "$1"
   else
     printf 'less -N -S -R --mouse %q' "$1"
   fi
@@ -508,7 +514,7 @@ label_viewer() {
 }
 
 open_file() {
-  local file="$1" old new cwd state
+  local file="$1" old new cwd state sock
   file="$(readlink -f "$file")"
   [ -f "$file" ] || return
   old="$(opt @agentnav_viewer)"
@@ -527,10 +533,12 @@ open_file() {
       return
     fi
   fi
-  rm -f "$STATE/nvim.sock"
+  rm -f "$STATE"/nvim-*.sock # no live instance remains, so any leftover socket is stale
+  sock="$STATE/nvim-$$-$RANDOM.sock"
   cwd="$(head -1 "$STATE/roots" 2>/dev/null)"
   [ -d "$cwd" ] || cwd="$(dirname "$file")"
-  new="$(tmux new-window -d -P -F '#{pane_id}' -n view -c "$cwd" "$(viewer_cmd "$file")")"
+  new="$(tmux new-window -d -P -F '#{pane_id}' -n view -c "$cwd" "$(viewer_cmd "$file" "$sock")")"
+  tmux set -p -t "$new" @agentnav_sock "$sock"
   label_viewer "$new" "$file"
   setopt @agentnav_viewer "$new"
   show "$new"
