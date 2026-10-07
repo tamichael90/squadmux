@@ -37,6 +37,7 @@ telescope, completion) so hand edits feel like an IDE.
 
 - Linux x86_64 (other platforms: not yet)
 - tmux >= 3.3, git, python3, curl, tar, GNU coreutils (`timeout`, `readlink -f`), flock (util-linux)
+- Node.js with npm (Mason installs vtsls and bash-language-server from npm)
 - A C compiler (gcc) for treesitter parsers
 - fd and fzf (optional, installed by `install.sh`): enable the folder picker on "+ add folder"
 - Claude Code; the status dots come from its hooks
@@ -54,6 +55,8 @@ tools that are already present. It then symlinks `agentnav/` to `~/.config/agent
 `~/.config/nvim` (an existing config is moved to `~/.config/nvim.bak.<timestamp>`, never deleted),
 appends marker-guarded blocks to `~/.tmux.conf` and `~/.bashrc`, merges `claude/hooks.json` into
 `~/.claude/settings.json` (backed up first), and runs the Neovim plugin / parser / server install.
+Note that the tmux block turns `mouse` on globally and the bash block adds `alias vim=nvim`; drop
+either line from the block if you do not want it.
 
 Options: `--dry-run`, `--skip-nvim` (configs and agentnav only), `--reinstall-tools`.
 Environment: `AGENTNAV_PREFIX` (default `~/.local`), `AGENTNAV_CONFIG` (default `~/.config/agentnav`),
@@ -109,6 +112,8 @@ unsaved buffers survive. `agentnav.sh ctxadd <dir>` / `ctxrm <dir>` manage the t
 | `<leader>rn` `ca` `cf`  | rename, code action, format                        |
 | `]d` `[d` `<leader>d`   | next / previous diagnostic, show line diagnostics  |
 | `]h` `[h` `<leader>hp`  | next / previous git hunk, preview hunk             |
+| `<leader>hr` `hb`       | reset hunk, blame line                             |
+| `<leader>w` `q`         | write, quit window                                 |
 | `<C-y>` `<C-n>` `<C-p>` | accept / next / previous completion (blink.cmp)    |
 
 ## Uninstall

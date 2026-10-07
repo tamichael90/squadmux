@@ -24,6 +24,10 @@ unlink_ours() {
 
 remove_block() {
   grep -qF "# >>> $MARK >>>" "$1" 2>/dev/null || return 0
+  if ! grep -qF "# <<< $MARK <<<" "$1"; then
+    log "warning: $1 has the $MARK start marker but no end marker; left untouched, edit it by hand"
+    return 0
+  fi
   cp "$1" "$1.bak.$STAMP"
   sed -i "/^# >>> $MARK >>>\$/,/^# <<< $MARK <<<\$/d" "$1"
   log "removed $MARK block from $1 (backup: $1.bak.$STAMP)"
@@ -58,5 +62,13 @@ unlink_ours "$NVIM_CONFIG" "$REPO/nvim"
 remove_block "$HOME/.tmux.conf"
 remove_block "$HOME/.bashrc"
 remove_hooks
-tmux list-sessions >/dev/null 2>&1 && tmux source-file "$HOME/.tmux.conf" 2>/dev/null && log "reloaded ~/.tmux.conf"
+if tmux list-sessions >/dev/null 2>&1; then
+  # source-file cannot unbind, so drop the agentnav bindings and hook from the running server.
+  tmux unbind -n MouseDown1Pane
+  tmux unbind -n WheelUpPane
+  tmux unbind -n WheelDownPane
+  tmux set-hook -gu after-split-window
+  tmux source-file "$HOME/.tmux.conf" 2>/dev/null && log "reloaded ~/.tmux.conf"
+  log "note: tmux's default mouse bindings return when you restart the tmux server"
+fi
 log "done. A running agentnav sidebar keeps running until you stop it; binaries in ~/.local and backups were left in place."

@@ -41,11 +41,14 @@ tilde() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s
 
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] ||
   die "only Linux x86_64 is supported for now (this is $(uname -s) $(uname -m))"
-for tool in tmux git python3 curl tar gzip flock timeout; do
-  command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool (macOS: brew install coreutils flock)"
+for tool in tmux git python3 curl tar gzip flock timeout npm; do
+  command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool (macOS: brew install coreutils flock; npm comes with Node.js)"
 done
 tmux_ver="$(tmux -V | sed -E 's/^tmux (next-)?([0-9]+\.[0-9]+).*/\2/')"
-[ "$(printf '%s\n' 3.3 "$tmux_ver" | sort -V | head -1)" = 3.3 ] || die "tmux >= 3.3 required (found $tmux_ver)"
+case "$tmux_ver" in
+[0-9]*.[0-9]*) [ "$(printf '%s\n' 3.3 "$tmux_ver" | sort -V | head -1)" = 3.3 ] || die "tmux >= 3.3 required (found $tmux_ver)" ;;
+*) warn "unrecognised tmux version '$tmux_ver'; assuming it is >= 3.3" ;;
+esac
 command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1 ||
   warn "no C compiler found; nvim-treesitter will not be able to build parsers (install gcc)"
 
@@ -63,34 +66,46 @@ import json, re, sys
 rel = json.load(sys.stdin)
 for a in rel["assets"]:
     if re.fullmatch(sys.argv[1], a["name"]):
-        print(a["name"], a["browser_download_url"], a.get("digest", "").removeprefix("sha256:") or "-", rel["tag_name"])
+        print(a["name"], a["browser_download_url"], (a.get("digest") or "").removeprefix("sha256:") or "-", rel["tag_name"])
         break
 else:
     sys.exit("no release asset matching " + sys.argv[1])
 ' "$2"
 }
 
-# fetch <owner/repo> <name-regex>: download to $TMP, verify sha256 (API digest, else the published
-# .sha256 file), print the local path.
+# fetch <owner/repo> <name-regex>: download to $TMP, verify sha256 (API digest, else a published
+# .sha256 / .sha256sum file), print the local path.
 fetch() {
   local name url digest tag file
   read -r name url digest tag < <(release_asset "$1" "$2")
   file="$TMP/$name"
   log "downloading $name ($tag)" >&2
   curl_gh -o "$file" "$url"
-  [ "$digest" != "-" ] || digest="$(curl_gh "$url.sha256" | cut -d' ' -f1)" || die "no checksum published for $name"
+  [ "$digest" != "-" ] || digest="$( (curl_gh "$url.sha256" 2>/dev/null || curl_gh "$url.sha256sum") | cut -d' ' -f1)"
+  [ -n "$digest" ] && [ "$digest" != "-" ] || die "no checksum published for $name"
   echo "$digest  $file" | sha256sum -c --quiet - || die "checksum mismatch for $name"
   printf '%s' "$file"
 }
 
 have() { command -v "$1" >/dev/null 2>&1 || [ -x "$PREFIX/bin/$1" ]; }
+found() { command -v "$1" 2>/dev/null || echo "$PREFIX/bin/$1"; }
+
+# The config needs Neovim >= 0.11 (vim.lsp.config, vim.uv, nvim-treesitter main); older ones get replaced.
+tool_ok() {
+  local v
+  [ "$1" = nvim ] || return 0
+  v="$("$(found nvim)" --version 2>/dev/null | sed -n 's/^NVIM v\([0-9]*\.[0-9]*\).*/\1/p')"
+  [ -n "$v" ] && [ "$(printf '%s\n' 0.11 "$v" | sort -V | head -1)" = 0.11 ] && return 0
+  warn "found Neovim ${v:-?} at $(found nvim); the config needs >= 0.11, installing a current one to $PREFIX"
+  return 1
+}
 
 # install_tool <name> <owner/repo> <asset-regex> <install-command...>: the command runs with $f = archive.
 install_tool() {
   local name="$1" repo="$2" pattern="$3" f
   shift 3
-  if [ "$REINSTALL" = 0 ] && have "$name"; then
-    log "$name present ($(command -v "$name" || echo "$PREFIX/bin/$name")), skipping; --reinstall-tools to refresh"
+  if [ "$REINSTALL" = 0 ] && have "$name" && tool_ok "$name"; then
+    log "$name present ($(found "$name")), skipping; --reinstall-tools to refresh"
     return
   fi
   if [ "$DRY" = 1 ]; then dry "download $repo ($pattern) and install $name to $PREFIX"; return; fi
@@ -101,7 +116,10 @@ install_tool() {
 
 install_nvim() {
   tar -xzf "$1" -C "$TMP"
-  rm -rf "$PREFIX/nvim"
+  if [ -e "$PREFIX/nvim" ]; then
+    mv "$PREFIX/nvim" "$PREFIX/nvim.bak.$STAMP"
+    changed "moved previous $PREFIX/nvim to $PREFIX/nvim.bak.$STAMP"
+  fi
   mv "$TMP/nvim-linux-x86_64" "$PREFIX/nvim"
   ln -sfn "$PREFIX/nvim/bin/nvim" "$PREFIX/bin/nvim"
 }
@@ -182,37 +200,52 @@ wire_bash() {
   append_block "$HOME/.bashrc" "$(printf 'export EDITOR=nvim\nexport VISUAL=nvim\nalias vim=nvim')"
 }
 
-# Merge claude/hooks.json into ~/.claude/settings.json, skipping hooks whose command is already there.
+# Merge claude/hooks.json into ~/.claude/settings.json. Any existing hook running
+# `agentnav.sh state <x>` (e.g. from an older install path) is rewritten in place; others are appended.
 wire_hooks() {
-  local added
-  added="$(python3 - "$CLAUDE_SETTINGS" "$REPO/claude/hooks.json" "$(tilde "$CONFIG_DIR")" "$DRY" "$STAMP" <<'PY'
-import json, os, shutil, sys
+  local result
+  result="$(python3 - "$CLAUDE_SETTINGS" "$REPO/claude/hooks.json" "$(tilde "$CONFIG_DIR")" "$DRY" "$STAMP" <<'PY'
+import json, os, re, shutil, sys
 path, hooks_path, config_dir, dry, stamp = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1", sys.argv[5]
+ours = re.compile(r"agentnav\.sh state (\S+)")
 settings = json.load(open(path)) if os.path.exists(path) else {}
 wanted = json.loads(json.dumps(json.load(open(hooks_path))["hooks"]).replace("~/.config/agentnav", config_dir))
 hooks = settings.setdefault("hooks", {})
-added = 0
+added = updated = 0
 for event, entries in wanted.items():
     existing = hooks.setdefault(event, [])
-    present = {h.get("command") for e in existing for h in e.get("hooks", [])}
     for entry in entries:
-        if any(h["command"] in present for h in entry["hooks"]):
-            continue
-        existing.append(entry)
-        added += 1
-if added and not dry:
+        command = entry["hooks"][0]["command"]
+        state = ours.search(command).group(1)
+        mine = [h for e in existing for h in e.get("hooks", [])
+                if (m := ours.search(h.get("command", ""))) and m.group(1) == state]
+        if not mine:
+            existing.append(entry)
+            added += 1
+        elif mine[0]["command"] != command:
+            mine[0]["command"] = command
+            updated += 1
+# Stray agentnav hooks under events we no longer define still get the current path.
+for entries in hooks.values():
+    for h in (h for e in entries for h in e.get("hooks", [])):
+        m = ours.search(h.get("command", ""))
+        if m and not h["command"].startswith(config_dir + "/agentnav.sh"):
+            h["command"] = f"{config_dir}/agentnav.sh state {m.group(1)} 2>/dev/null || true"
+            updated += 1
+if (added or updated) and not dry:
     if os.path.exists(path):
         shutil.copy2(path, f"{path}.bak.{stamp}")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(settings, f, indent=2)
         f.write("\n")
-print(added)
+print(added, updated)
 PY
 )"
-  if [ "$added" = 0 ]; then log "Claude Code hooks already present in $(tilde "$CLAUDE_SETTINGS")"
-  elif [ "$DRY" = 1 ]; then dry "add $added hook entries to $CLAUDE_SETTINGS (backup first)"
-  else changed "added $added agentnav hook entries to $(tilde "$CLAUDE_SETTINGS") (backup: .bak.$STAMP)"; fi
+  set -- $result
+  if [ "$1" = 0 ] && [ "$2" = 0 ]; then log "Claude Code hooks already present in $(tilde "$CLAUDE_SETTINGS")"
+  elif [ "$DRY" = 1 ]; then dry "add $1 and rewrite $2 agentnav hook entries in $CLAUDE_SETTINGS (backup first)"
+  else changed "hooks in $(tilde "$CLAUDE_SETTINGS"): $1 added, $2 rewritten to the new path (backup: .bak.$STAMP)"; fi
 }
 
 reload_tmux() {
@@ -222,16 +255,21 @@ reload_tmux() {
 }
 
 setup_nvim() {
-  local nvim langs
-  nvim="$(command -v nvim 2>/dev/null || echo "$PREFIX/bin/nvim")"
+  local nvim langs server mason_bin="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/mason/bin"
+  nvim="$PREFIX/bin/nvim"
+  [ -x "$nvim" ] || nvim="$(command -v nvim)"
   # Parser list comes from nvim/lua/plugins.lua so the two never drift.
   langs="$(sed -n "s/^local ts_langs = { \(.*\) }.*/\1/p" "$REPO/nvim/lua/plugins.lua")"
   if [ "$DRY" = 1 ]; then dry "nvim --headless: Lazy! sync, treesitter install { $langs }, MasonInstall"; return; fi
   log "syncing Neovim plugins, parsers and language servers (first run downloads ~150 MB)"
   "$nvim" --headless "+Lazy! sync" +qa
   "$nvim" --headless "+lua require('nvim-treesitter').install({ $langs }):wait(300000)" +qa
-  # Mason package names for the servers listed in nvim/lua/plugins.lua.
+  # Mason package names for the servers listed in nvim/lua/plugins.lua. Headless MasonInstall
+  # exits 0 even on failure, so check for the binaries.
   "$nvim" --headless "+MasonInstall vtsls lua-language-server bash-language-server" +qa
+  for server in vtsls lua-language-server bash-language-server; do
+    [ -x "$mason_bin/$server" ] || die "mason did not install $server; run :MasonInstall $server inside nvim to see why"
+  done
   changed "Neovim plugins, parsers and language servers installed"
 }
 
