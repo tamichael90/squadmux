@@ -10,32 +10,55 @@
 # The click bindings and auto-start hook live in agentnav.tmux. Both panels also take Up/Down/Enter
 # (and Left/Right in CONTEXT) when focused; the pane process reads the keys itself.
 set -u
+[ "${BASH_VERSINFO[0]}" -ge 4 ] || { echo "agentnav: bash >= 4 required (macOS: brew install bash)" >&2; exit 1; }
 
-SELF="$(readlink -f "$0")"
+# ---- portability ---------------------------------------------------------
+# macOS ships BSD tools: resolve GNU equivalents once and route the few GNU-only calls through them.
+READLINK="$(command -v greadlink || command -v readlink)"
+"$READLINK" -f / >/dev/null 2>&1 || READLINK=""
+realpath_f() { # readlink -f, or python when neither GNU nor a modern BSD readlink is present
+  if [ -n "$READLINK" ]; then "$READLINK" -f "$1" 2>/dev/null; else python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; fi
+}
+TIMEOUT="$(command -v timeout || command -v gtimeout || true)"
+HAVE_FLOCK=1
+command -v flock >/dev/null 2>&1 || HAVE_FLOCK=0
+lock() { [ "$HAVE_FLOCK" = 1 ] && flock "$@"; return 0; } # without flock the start/auto race is tolerated
+version_ge() { # version_ge 3.6 3.3: major.minor comparison without sort -V
+  awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, "."); exit !(x[1] + 0 > y[1] + 0 || (x[1] + 0 == y[1] + 0 && x[2] + 0 >= y[2] + 0)) }'
+}
+
+SELF="$(realpath_f "$0")"
 WIDTH=24
 HEADER=2 # lines above the first clickable row in either panel
 TEAMS_DIR="$HOME/.claude/teams"
 T="" # tmux session all commands are scoped to
 STATE="" # per-session directory holding the context panel's state
+SOCKDIR="" # where viewer sockets live: STATE, or a short /tmp dir when STATE is too long for a unix socket path
 nvim_version_ok() { # <nvim>: true when it is >= 0.11, what the bundled config needs
   local v
   v="$(NVIM_LOG_FILE=/dev/null "$1" --version 2>/dev/null | sed -n 's/^NVIM v\([0-9]*\.[0-9]*\).*/\1/p')"
-  [ -n "$v" ] && [ "$(printf '%s\n' 0.11 "$v" | sort -V | head -1)" = 0.11 ]
+  [ -n "$v" ] && version_ge "$v" 0.11
 }
 NVIM="$(command -v nvim 2>/dev/null)" # viewer editor; empty falls back to less
 # Prefer the installer's Neovim over one found earlier on PATH (e.g. an older distro package).
 NVIM_PREFERRED="${AGENTNAV_PREFIX:-$HOME/.local}/bin/nvim"
-if [ -x "$NVIM_PREFERRED" ] && { [ -z "$NVIM" ] || [ "$(readlink -f "$NVIM_PREFERRED")" != "$(readlink -f "$NVIM")" ]; } &&
+if [ -x "$NVIM_PREFERRED" ] && { [ -z "$NVIM" ] || [ "$(realpath_f "$NVIM_PREFERRED")" != "$(realpath_f "$NVIM")" ]; } &&
   nvim_version_ok "$NVIM_PREFERRED"; then
   NVIM="$NVIM_PREFERRED"
 fi
-command -v timeout >/dev/null 2>&1 || NVIM="" # nvim_rpc needs coreutils timeout; start() says so
+[ -n "$TIMEOUT" ] || NVIM="" # nvim_rpc needs coreutils timeout; start() says so
 
 use_session_of() {
   T="$(tmux display -p -t "$1" '#{session_id}')"
   STATE="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/agentnav-${T#\$}"
-  mkdir -p "$STATE" && chmod 700 "$STATE"
-  [ -O "$STATE" ] || { echo "agentnav: $STATE not owned by ${USER:-$(id -un)}" >&2; exit 1; }
+  private_dir "$STATE"
+  # Socket paths are capped at ~104 bytes (macOS) / 107 (Linux); $TMPDIR on macOS is already ~50.
+  SOCKDIR="$STATE"
+  [ "${#STATE}" -le 60 ] || { SOCKDIR="/tmp/sqm-$(id -u)-${T#\$}"; private_dir "$SOCKDIR"; }
+}
+private_dir() {
+  mkdir -p "$1" && chmod 700 "$1"
+  [ -O "$1" ] || { echo "agentnav: $1 not owned by ${USER:-$(id -un)}" >&2; exit 1; }
 }
 opt() { tmux show -t "$T" -qv "$1" 2>/dev/null; }
 setopt() { tmux set -t "$T" "$@"; }
@@ -203,6 +226,7 @@ clear_state() {
   else
     setopt -u @agentnav_viewer
     rm -rf "$STATE"
+    [ "$SOCKDIR" = "$STATE" ] || rm -rf "$SOCKDIR"
   fi
 }
 
@@ -390,7 +414,7 @@ ctx_set_cursor() {
 # visible window, or act on the row under it.
 ctx_key() {
   local key="$1" visible=$(($2 - HEADER)) cur n scroll line kind path
-  n="$(wc -l <"$STATE/rows" 2>/dev/null || echo 0)"
+  n="$(wc -l <"$STATE/rows" 2>/dev/null | tr -d ' ' || echo 0)"
   cur="$(ctx_cursor_row)"
   case "$key" in
   up) cur=$((cur > 0 ? cur - 1 : 0)) ;;
@@ -443,7 +467,7 @@ ctx_base() {
 ctx_add() {
   local dir="${1/#\~/$HOME}"
   case "$dir" in /*) ;; *) dir="$(ctx_base)/$dir" ;; esac
-  dir="$(readlink -f "$dir" 2>/dev/null)"
+  dir="$(realpath_f "$dir")"
   [ -d "$dir" ] || { echo "not a directory: $1" >&2; return 1; }
   touch "$STATE/roots"
   grep -qxF -- "$dir" "$STATE/roots" || printf '%s\n' "$dir" >>"$STATE/roots"
@@ -452,7 +476,7 @@ ctx_add() {
 
 ctx_rm() {
   local dir
-  dir="$(readlink -f "${1/#\~/$HOME}" 2>/dev/null)"
+  dir="$(realpath_f "${1/#\~/$HOME}")"
   [ -f "$STATE/roots" ] || return
   grep -vxF -- "$dir" "$STATE/roots" >"$STATE/roots.tmp" || true
   mv "$STATE/roots.tmp" "$STATE/roots"
@@ -479,7 +503,7 @@ nvim_sock() { popt "$(opt @agentnav_viewer)" @agentnav_sock; }
 nvim_rpc() {
   local t="$1"
   shift
-  timeout "$t" "$NVIM" --server "$(nvim_sock)" "$@" </dev/null
+  "$TIMEOUT" "$t" "$NVIM" --server "$(nvim_sock)" "$@" </dev/null
 }
 
 # 0 = nvim answering, 124 = up but blocked, 1 = no nvim behind the socket.
@@ -515,7 +539,7 @@ label_viewer() {
 
 open_file() {
   local file="$1" old new cwd state sock
-  file="$(readlink -f "$file")"
+  file="$(realpath_f "$file")"
   [ -f "$file" ] || return
   old="$(opt @agentnav_viewer)"
   setopt @agentnav_ctx_file "$file"
@@ -533,8 +557,8 @@ open_file() {
       return
     fi
   fi
-  rm -f "$STATE"/nvim-*.sock # no live instance remains, so any leftover socket is stale
-  sock="$STATE/nvim-$$-$RANDOM.sock"
+  rm -f "$SOCKDIR"/nvim-*.sock # no live instance remains, so any leftover socket is stale
+  sock="$SOCKDIR/nvim-$$-$RANDOM.sock"
   cwd="$(head -1 "$STATE/roots" 2>/dev/null)"
   [ -d "$cwd" ] || cwd="$(dirname "$file")"
   new="$(tmux new-window -d -P -F '#{pane_id}' -n view -c "$cwd" "$(viewer_cmd "$file" "$sock")")"
@@ -635,16 +659,17 @@ start() {
   # pane carries its role before adopt() can mistake it for an agent and park it.
   if [ -z "${AGENTNAV_LOCKED:-}" ]; then
     exec 8>"${TMPDIR:-/tmp}/agentnav.lock"
-    flock 8
+    lock 8
   fi
   ctx="$(tmux split-window -vd -l 50% -t "$side" -P -F '#{pane_id}' "$SELF context")"
   tmux set -p -t "$ctx" @agentnav_role context
   setopt @agentnav_context "$ctx"
-  [ -z "${AGENTNAV_LOCKED:-}" ] && flock -u 8
+  [ -z "${AGENTNAV_LOCKED:-}" ] && lock -u 8
   [ -s "$STATE/roots" ] || ctx_add "$(tmux display -p -t "$lead" '#{pane_current_path}')"
   echo "agentnav started (sidebar $side, context $ctx)"
   [ -z "$NVIM" ] && command -v nvim >/dev/null 2>&1 &&
     echo "note: 'timeout' (GNU coreutils) is missing, so files open in less instead of nvim"
+  [ "$HAVE_FLOCK" = 1 ] || echo "note: 'flock' is missing, so a burst of pane splits may race agentnav (brew install flock)"
 }
 
 # Run on every pane split: park new panes if the sidebar is up, or start it
@@ -652,7 +677,7 @@ start() {
 auto() {
   local i panes member lead
   exec 9>"${TMPDIR:-/tmp}/agentnav.lock"
-  flock 9
+  lock 9
   export AGENTNAV_LOCKED=1
   for i in 1 2 3 4 5; do
     if alive "$(opt @agentnav_sidebar)"; then
