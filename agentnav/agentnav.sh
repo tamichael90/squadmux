@@ -16,11 +16,13 @@ TEAMS_DIR="$HOME/.claude/teams"
 T="" # tmux session all commands are scoped to
 STATE="" # per-session directory holding the context panel's state
 NVIM="$(command -v nvim 2>/dev/null)" # viewer editor; empty falls back to less
+command -v timeout >/dev/null 2>&1 || NVIM="" # nvim_rpc needs coreutils timeout; start() says so
 
 use_session_of() {
   T="$(tmux display -p -t "$1" '#{session_id}')"
   STATE="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/agentnav-${T#\$}"
-  mkdir -p "$STATE"
+  mkdir -p "$STATE" && chmod 700 "$STATE"
+  [ -O "$STATE" ] || { echo "agentnav: $STATE not owned by ${USER:-$(id -un)}" >&2; exit 1; }
 }
 opt() { tmux show -t "$T" -qv "$1" 2>/dev/null; }
 setopt() { tmux set -t "$T" "$@"; }
@@ -439,17 +441,25 @@ ctx_scroll() {
 # Files open in a Neovim instance that lives in the viewer pane and is reused across opens
 # (listening on $STATE/nvim.sock), so unsaved buffers survive. Without nvim, less is used.
 
-# RPC to the viewer's nvim, bounded so an nvim stuck on a prompt (swap dialog, -- More --)
-# can't hang the panels. Exit 124 means it is up but not answering.
-nvim_rpc() { timeout 2 "$NVIM" --server "$STATE/nvim.sock" "$@"; }
+# nvim_rpc <seconds> <args>: RPC to the viewer's nvim, bounded so an nvim stuck on a prompt
+# (swap dialog, -- More --) can't hang the panels. Exit 124 means it is up but not answering.
+nvim_rpc() {
+  local t="$1"
+  shift
+  timeout "$t" "$NVIM" --server "$STATE/nvim.sock" "$@"
+}
 
 # 0 = nvim answering, 124 = up but blocked, 1 = no nvim behind the socket.
+# A blocked verdict is cached for 5s so repeated Enters don't each sit out the probe.
 nvim_state() {
+  local since
   [ -n "$NVIM" ] && [ -S "$STATE/nvim.sock" ] || return 1
-  nvim_rpc --remote-expr 1 >/dev/null 2>&1
+  since="$(cat "$STATE/nvim.blocked" 2>/dev/null || echo 0)"
+  [ $(($(date +%s) - since)) -lt 5 ] && return 124
+  nvim_rpc 1 --remote-expr 1 >/dev/null 2>&1
   case $? in
-  0) return 0 ;;
-  124) return 124 ;;
+  0) rm -f "$STATE/nvim.blocked"; return 0 ;;
+  124) date +%s >"$STATE/nvim.blocked"; return 124 ;;
   *) return 1 ;;
   esac
 }
@@ -480,7 +490,7 @@ open_file() {
     if [ "$state" != 1 ]; then
       # Show first: if nvim is blocked on a prompt the user needs to see it, not a second instance.
       show "$old"
-      if [ "$state" = 0 ] && nvim_rpc --remote "$file" >/dev/null 2>&1; then
+      if [ "$state" = 0 ] && nvim_rpc 2 --remote "$file" >/dev/null 2>&1; then
         label_viewer "$old" "$file"
       else
         tmux display-message "agentnav: viewer is waiting on a prompt; dismiss it and retry"
@@ -507,7 +517,7 @@ close_viewer() {
   nvim_state
   case $? in
   0)
-    nvim_rpc --remote-send '<C-\><C-n>:qa<CR>' >/dev/null 2>&1
+    nvim_rpc 2 --remote-send '<C-\><C-n>:qa<CR>' >/dev/null 2>&1
     sleep 1
     alive "$p" && return
     ;;
@@ -572,6 +582,8 @@ start() {
   [ -z "${AGENTNAV_LOCKED:-}" ] && flock -u 8
   [ -s "$STATE/roots" ] || ctx_add "$(tmux display -p -t "$lead" '#{pane_current_path}')"
   echo "agentnav started (sidebar $side, context $ctx)"
+  [ -z "$NVIM" ] && command -v nvim >/dev/null 2>&1 &&
+    echo "note: 'timeout' (GNU coreutils) is missing, so files open in less instead of nvim"
 }
 
 # Run on every pane split: park new panes if the sidebar is up, or start it

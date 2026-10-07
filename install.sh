@@ -41,8 +41,8 @@ tilde() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s
 
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] ||
   die "only Linux x86_64 is supported for now (this is $(uname -s) $(uname -m))"
-for tool in tmux git python3 curl tar gzip flock; do
-  command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
+for tool in tmux git python3 curl tar gzip flock timeout; do
+  command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool (macOS: brew install coreutils flock)"
 done
 tmux_ver="$(tmux -V | sed -E 's/^tmux (next-)?([0-9]+\.[0-9]+).*/\2/')"
 [ "$(printf '%s\n' 3.3 "$tmux_ver" | sort -V | head -1)" = 3.3 ] || die "tmux >= 3.3 required (found $tmux_ver)"

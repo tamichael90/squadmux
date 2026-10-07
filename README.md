@@ -36,7 +36,7 @@ telescope, completion) so hand edits feel like an IDE.
 ## Requirements
 
 - Linux x86_64 (other platforms: not yet)
-- tmux >= 3.3, git, python3, curl, tar, flock (util-linux)
+- tmux >= 3.3, git, python3, curl, tar, GNU coreutils (`timeout`, `readlink -f`), flock (util-linux)
 - A C compiler (gcc) for treesitter parsers
 - Claude Code; the status dots come from its hooks
 
@@ -116,7 +116,9 @@ Removes the symlinks, the marker blocks and the agentnav hooks. Binaries in `~/.
 
 ## Limitations
 
-- Linux x86_64 only; the installer refuses elsewhere. Needs `flock` (util-linux) and Python 3.
+- Linux x86_64 only; the installer refuses elsewhere. agentnav.sh relies on GNU coreutils (`timeout`,
+  `readlink -f`, `find -delete`), `flock` (util-linux), bash 4+ and Python 3; on stock macOS the missing
+  `timeout` alone would make every viewer probe fail.
 - Built for Claude Code: teammate discovery reads `~/.claude/teams`, status dots need its hooks.
 - Format on save for TypeScript uses tsserver's formatter via vtsls, not Prettier; drop the `typescript`
   entries from `format_on_save` in `nvim/init.lua` if your project formats differently.
