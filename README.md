@@ -28,8 +28,9 @@ telescope, completion) so hand edits feel like an IDE.
 
 - `agentnav/` — the sidebar and context panel (bash + a little Python), plus the tmux mouse bindings;
   it installs to `~/.config/agentnav` and keeps that name
-- `nvim/` — a ~170-line Lua Neovim config: lazy.nvim, vtsls / lua_ls / bashls via mason, treesitter,
-  telescope, gitsigns, blink.cmp, format on save
+- `nvim/` — a ~180-line Lua Neovim config: lazy.nvim, vtsls / lua_ls / bashls via mason, treesitter,
+  telescope, gitsigns, blink.cmp, format on save, Monokai Pro theme (the filter — pro, octagon, machine,
+  ristretto, spectrum, classic — is one line in `nvim/lua/plugins.lua`)
 - `install.sh` — installs Neovim, ripgrep, fd, fzf and the tree-sitter CLI into `~/.local` (no sudo),
   links the configs, and wires tmux, bash and the Claude Code hooks
 

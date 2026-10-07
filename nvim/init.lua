@@ -23,9 +23,8 @@ o.clipboard = 'unnamedplus'
 o.updatetime = 250
 o.timeoutlen = 400
 -- tmux here runs as tmux-256color with RGB passthrough (COLORTERM=truecolor), so 24-bit color is safe.
+-- The colorscheme (Monokai Pro) is set by its plugin spec in lua/plugins.lua.
 o.termguicolors = true
-o.background = 'dark'
-vim.cmd.colorscheme('default') -- built-in, adapts to 'background'; swap for a plugin theme if wanted
 
 vim.diagnostic.config({ virtual_text = true, severity_sort = true })
 

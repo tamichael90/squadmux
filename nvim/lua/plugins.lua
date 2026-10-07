@@ -3,6 +3,20 @@ local ts_langs = { 'typescript', 'tsx', 'javascript', 'lua', 'bash', 'json', 'ma
 local ts_filetypes = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact', 'lua', 'sh', 'bash', 'json', 'markdown' }
 
 return {
+  -- Theme. Filter: pro, octagon, machine, ristretto, spectrum or classic.
+  {
+    'loctvl842/monokai-pro.nvim',
+    lazy = false,
+    priority = 1000,
+    config = function()
+      local ok = pcall(function()
+        require('monokai-pro').setup({ filter = 'pro', transparent_background = false, terminal_colors = true })
+        vim.cmd.colorscheme('monokai-pro')
+      end)
+      if not ok then vim.cmd.colorscheme('default') end
+    end,
+  },
+
   -- Parsers and queries; highlighting itself is Neovim's (vim.treesitter.start).
   {
     'nvim-treesitter/nvim-treesitter',
