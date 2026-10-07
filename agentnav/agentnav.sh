@@ -459,7 +459,7 @@ ctx_scroll() {
 nvim_rpc() {
   local t="$1"
   shift
-  timeout "$t" "$NVIM" --server "$STATE/nvim.sock" "$@"
+  timeout "$t" "$NVIM" --server "$STATE/nvim.sock" "$@" </dev/null
 }
 
 # 0 = nvim answering, 124 = up but blocked, 1 = no nvim behind the socket.
