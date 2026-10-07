@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# Installs squadmux without sudo: Neovim, ripgrep, fd, fzf and the tree-sitter CLI into
-# $PREFIX, links this repo's agentnav/ and nvim/ into ~/.config, and wires tmux, bash and Claude Code hooks.
+# Installs squadmux without sudo: Neovim, ripgrep, fd, fzf and the tree-sitter CLI into $PREFIX,
+# links this repo's agentnav/ and nvim/ into ~/.config, and wires tmux, your shell rc and Claude Code hooks.
+# Linux x86_64 and macOS (arm64, x86_64).
 # Usage: ./install.sh [--dry-run] [--skip-nvim] [--reinstall-tools]
 #   --dry-run           print what would change, touch nothing
 #   --skip-nvim         agentnav sidebar + configs only: no tool downloads, no plugin sync
-#   --reinstall-tools   re-download nvim/rg/fd/tree-sitter even if already present
+#   --reinstall-tools   re-download nvim/rg/fd/fzf/tree-sitter even if already present
 #   AGENTNAV_PREFIX     binaries go to $AGENTNAV_PREFIX/bin, Neovim to $AGENTNAV_PREFIX/nvim (default ~/.local)
 #   AGENTNAV_CONFIG     where agentnav/ is linked (default ~/.config/agentnav)
 #   XDG_CONFIG_HOME     nvim/ is linked to $XDG_CONFIG_HOME/nvim (default ~/.config/nvim)
 set -euo pipefail
+[ "${BASH_VERSINFO[0]}" -ge 4 ] || { echo "install.sh: bash >= 4 required (macOS: brew install bash, then run with that bash)" >&2; exit 1; }
 
-REPO="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+REPO="$(cd "$(dirname "$0")" && pwd -P)"
 PREFIX="${AGENTNAV_PREFIX:-$HOME/.local}"
 CONFIG_DIR="${AGENTNAV_CONFIG:-$HOME/.config/agentnav}"
 NVIM_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-MARK="agentnav" # marker comment used for the ~/.tmux.conf and ~/.bashrc blocks
+MARK="agentnav" # marker comment used for the ~/.tmux.conf and shell rc blocks
 STAMP="$(date +%Y%m%d-%H%M%S)"
 DRY=0 SKIP_NVIM=0 REINSTALL=0
 CHANGES=()
@@ -25,7 +27,7 @@ for arg in "$@"; do
   --dry-run) DRY=1 ;;
   --skip-nvim) SKIP_NVIM=1 ;;
   --reinstall-tools) REINSTALL=1 ;;
-  -h | --help) sed -n '2,10p' "$0"; exit 0 ;;
+  -h | --help) sed -n '2,11p' "$0"; exit 0 ;;
   *) echo "unknown option: $arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -36,25 +38,91 @@ die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 changed() { CHANGES+=("$*"); log "$*"; }
 dry() { printf '    [dry-run] %s\n' "$*"; }
 tilde() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
+version_ge() { # version_ge 3.6 3.3: major.minor comparison (BSD sort has no -V)
+  awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, "."); exit !(x[1] + 0 > y[1] + 0 || (x[1] + 0 == y[1] + 0 && x[2] + 0 >= y[2] + 0)) }'
+}
+realpath_f() { # readlink -f where it exists (GNU, macOS 12.3+), else python
+  if "${READLINK:-readlink}" -f / >/dev/null 2>&1; then "${READLINK:-readlink}" -f "$1"; else python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; fi
+}
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 
-# ---- prerequisites ---------------------------------------------------------
+# ---- platform ----------------------------------------------------------------
 
-[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] ||
-  die "only Linux x86_64 is supported for now (this is $(uname -s) $(uname -m))"
-for tool in tmux git python3 curl tar gzip flock timeout npm; do
-  command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool (macOS: brew install coreutils flock; npm comes with Node.js)"
+# SQM_UNAME_S / SQM_UNAME_M let the tests simulate another platform's planning (dry-run only makes sense).
+case "${SQM_UNAME_S:-$(uname -s)}-${SQM_UNAME_M:-$(uname -m)}" in
+Linux-x86_64) PLATFORM=linux-x86_64 ;;
+Darwin-arm64) PLATFORM=darwin-arm64 ;;
+Darwin-x86_64) PLATFORM=darwin-x86_64 ;;
+*) die "unsupported platform $(uname -s) $(uname -m); squadmux supports Linux x86_64 and macOS arm64/x86_64" ;;
+esac
+DARWIN=0
+case "$PLATFORM" in darwin-*) DARWIN=1 ;; esac
+
+# Release asset name (regex) per tool and platform, plus the directory the Neovim tarball unpacks to.
+case "$PLATFORM" in
+linux-x86_64)
+  NVIM_ASSET='nvim-linux-x86_64\.tar\.gz' NVIM_DIR=nvim-linux-x86_64
+  RG_ASSET='ripgrep-.*-x86_64-unknown-linux-musl\.tar\.gz'
+  FD_ASSET='fd-.*-x86_64-unknown-linux-gnu\.tar\.gz'
+  FZF_ASSET='fzf-.*-linux_amd64\.tar\.gz'
+  TS_ASSET='tree-sitter-linux-x64\.gz'
+  ;;
+darwin-arm64)
+  NVIM_ASSET='nvim-macos-arm64\.tar\.gz' NVIM_DIR=nvim-macos-arm64
+  RG_ASSET='ripgrep-.*-aarch64-apple-darwin\.tar\.gz'
+  FD_ASSET='fd-.*-aarch64-apple-darwin\.tar\.gz'
+  FZF_ASSET='fzf-.*-darwin_arm64\.tar\.gz'
+  TS_ASSET='tree-sitter-macos-arm64\.gz'
+  ;;
+darwin-x86_64)
+  NVIM_ASSET='nvim-macos-x86_64\.tar\.gz' NVIM_DIR=nvim-macos-x86_64
+  RG_ASSET='ripgrep-.*-x86_64-apple-darwin\.tar\.gz'
+  FD_ASSET='fd-.*-x86_64-apple-darwin\.tar\.gz'
+  FZF_ASSET='fzf-.*-darwin_amd64\.tar\.gz'
+  TS_ASSET='tree-sitter-macos-x64\.gz'
+  ;;
+esac
+
+# ---- prerequisites -------------------------------------------------------------
+
+missing=()
+for tool in tmux git python3 curl tar gzip npm; do
+  command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
+command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1 || missing+=("timeout (coreutils)")
+READLINK="$(command -v greadlink || command -v readlink || true)"
+[ -n "$READLINK" ] && "$READLINK" -f / >/dev/null 2>&1 || missing+=("readlink -f (coreutils)")
+command -v flock >/dev/null 2>&1 || missing+=("flock")
+if [ "${#missing[@]}" -gt 0 ]; then
+  if [ "$DARWIN" = 1 ]; then
+    brew=""
+    for m in "${missing[@]}"; do
+      case "$m" in
+      timeout*|readlink*) brew="$brew coreutils" ;;
+      npm) brew="$brew node" ;;
+      python3) brew="$brew python" ;;
+      *) brew="$brew $m" ;;
+      esac
+    done
+    die "missing: ${missing[*]}. Run: xcode-select --install (once), then brew install$(printf '%s' "$brew" | tr ' ' '\n' | sort -u | tr '\n' ' ')"
+  fi
+  die "missing required tools: ${missing[*]} (flock is in util-linux, timeout in coreutils, npm comes with Node.js)"
+fi
 tmux_ver="$(tmux -V | sed -E 's/^tmux (next-)?([0-9]+\.[0-9]+).*/\2/')"
 case "$tmux_ver" in
-[0-9]*.[0-9]*) [ "$(printf '%s\n' 3.3 "$tmux_ver" | sort -V | head -1)" = 3.3 ] || die "tmux >= 3.3 required (found $tmux_ver)" ;;
+[0-9]*.[0-9]*) version_ge "$tmux_ver" 3.3 || die "tmux >= 3.3 required (found $tmux_ver)" ;;
 *) warn "unrecognised tmux version '$tmux_ver'; assuming it is >= 3.3" ;;
 esac
-command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1 ||
-  warn "no C compiler found; nvim-treesitter will not be able to build parsers (install gcc)"
+if [ "$DARWIN" = 1 ]; then
+  xcode-select -p >/dev/null 2>&1 || warn "Xcode command line tools not found (xcode-select --install); nvim-treesitter needs a C compiler"
+else
+  command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1 ||
+    warn "no C compiler found; nvim-treesitter will not be able to build parsers (install gcc)"
+fi
 
-# ---- tools -----------------------------------------------------------------
+# ---- tools ---------------------------------------------------------------------
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/squadmux.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 curl_gh() { curl -fsSL ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} "$@"; }
@@ -83,7 +151,9 @@ fetch() {
   curl_gh -o "$file" "$url"
   [ "$digest" != "-" ] || digest="$( (curl_gh "$url.sha256" 2>/dev/null || curl_gh "$url.sha256sum") | cut -d' ' -f1)"
   [ -n "$digest" ] && [ "$digest" != "-" ] || die "no checksum published for $name"
-  echo "$digest  $file" | sha256sum -c --quiet - || die "checksum mismatch for $name"
+  [ "$(sha256 "$file")" = "$digest" ] || die "checksum mismatch for $name"
+  # Gatekeeper quarantines downloads on macOS; clear it before extracting, as Neovim's README advises.
+  [ "$DARWIN" = 1 ] && command -v xattr >/dev/null 2>&1 && xattr -c "$file" 2>/dev/null
   printf '%s' "$file"
 }
 
@@ -95,7 +165,7 @@ tool_ok() {
   local v
   [ "$1" = nvim ] || return 0
   v="$(NVIM_LOG_FILE=/dev/null "$(found nvim)" --version 2>/dev/null | sed -n 's/^NVIM v\([0-9]*\.[0-9]*\).*/\1/p')"
-  [ -n "$v" ] && [ "$(printf '%s\n' 0.11 "$v" | sort -V | head -1)" = 0.11 ] && return 0
+  [ -n "$v" ] && version_ge "$v" 0.11 && return 0
   warn "found Neovim ${v:-?} at $(found nvim); the config needs >= 0.11, installing a current one to $PREFIX"
   return 1
 }
@@ -108,30 +178,34 @@ install_tool() {
     log "$name present ($(found "$name")), skipping; --reinstall-tools to refresh"
     return
   fi
-  if [ "$DRY" = 1 ]; then dry "download $repo ($pattern) and install $name to $PREFIX"; return; fi
+  if [ "$DRY" = 1 ]; then
+    dry "download and install $name to $PREFIX from $(release_asset "$repo" "$pattern" | cut -d' ' -f2)"
+    return
+  fi
   f="$(fetch "$repo" "$pattern")"
   "$@" "$f"
   changed "installed $name to $PREFIX"
 }
 
+install_man() { mkdir -p "$PREFIX/share/man/man1" && install -m644 "$1" "$PREFIX/share/man/man1/"; }
 install_nvim() {
   tar -xzf "$1" -C "$TMP"
   if [ -e "$PREFIX/nvim" ]; then
     mv "$PREFIX/nvim" "$PREFIX/nvim.bak.$STAMP"
     changed "moved previous $PREFIX/nvim to $PREFIX/nvim.bak.$STAMP"
   fi
-  mv "$TMP/nvim-linux-x86_64" "$PREFIX/nvim"
+  mv "$TMP/$NVIM_DIR" "$PREFIX/nvim"
   ln -sfn "$PREFIX/nvim/bin/nvim" "$PREFIX/bin/nvim"
 }
 install_rg() {
   tar -xzf "$1" -C "$TMP"
   install -m755 "$TMP"/ripgrep-*/rg "$PREFIX/bin/rg"
-  install -Dm644 "$TMP"/ripgrep-*/doc/rg.1 "$PREFIX/share/man/man1/rg.1"
+  install_man "$TMP"/ripgrep-*/doc/rg.1
 }
 install_fd() {
   tar -xzf "$1" -C "$TMP"
   install -m755 "$TMP"/fd-*/fd "$PREFIX/bin/fd"
-  install -Dm644 "$TMP"/fd-*/fd.1 "$PREFIX/share/man/man1/fd.1"
+  install_man "$TMP"/fd-*/fd.1
 }
 install_tree_sitter() {
   gunzip -c "$1" >"$TMP/tree-sitter"
@@ -144,27 +218,27 @@ install_fzf() {
 
 install_tools() {
   [ "$DRY" = 1 ] || mkdir -p "$PREFIX/bin"
-  install_tool nvim neovim/neovim 'nvim-linux-x86_64\.tar\.gz' install_nvim
-  install_tool rg BurntSushi/ripgrep 'ripgrep-.*-x86_64-unknown-linux-musl\.tar\.gz' install_rg
-  install_tool fd sharkdp/fd 'fd-.*-x86_64-unknown-linux-gnu\.tar\.gz' install_fd
-  install_tool tree-sitter tree-sitter/tree-sitter 'tree-sitter-linux-x64\.gz' install_tree_sitter
-  install_tool fzf junegunn/fzf 'fzf-.*-linux_amd64\.tar\.gz' install_fzf
+  install_tool nvim neovim/neovim "$NVIM_ASSET" install_nvim
+  install_tool rg BurntSushi/ripgrep "$RG_ASSET" install_rg
+  install_tool fd sharkdp/fd "$FD_ASSET" install_fd
+  install_tool tree-sitter tree-sitter/tree-sitter "$TS_ASSET" install_tree_sitter
+  install_tool fzf junegunn/fzf "$FZF_ASSET" install_fzf
   case ":$PATH:" in
   *":$PREFIX/bin:"*) ;;
   *) warn "$PREFIX/bin is not on your PATH; add it to your shell rc" ;;
   esac
   if [ -x "$PREFIX/bin/nvim" ] && command -v nvim >/dev/null 2>&1 &&
-    [ "$(readlink -f "$(command -v nvim)")" != "$(readlink -f "$PREFIX/bin/nvim")" ]; then
+    [ "$(realpath_f "$(command -v nvim)")" != "$(realpath_f "$PREFIX/bin/nvim")" ]; then
     warn "$(command -v nvim) comes before $PREFIX/bin/nvim on your PATH; the shell and agentnav will use it"
   fi
 }
 
-# ---- config links ------------------------------------------------------------
+# ---- config links --------------------------------------------------------------
 
 # link_dir <target> <link>: symlink, backing up (never deleting) whatever is already there.
 link_dir() {
   local target="$1" link="$2"
-  if [ -L "$link" ] && [ "$(readlink -f "$link")" = "$target" ]; then
+  if [ -L "$link" ] && [ "$(realpath_f "$link")" = "$target" ]; then
     log "$(tilde "$link") already links to $(tilde "$target")"
     return
   fi
@@ -196,12 +270,16 @@ wire_tmux() {
   append_block "$HOME/.tmux.conf" "$(sed "s#~/.config/agentnav#$(tilde "$CONFIG_DIR")#" "$REPO/tmux/agentnav.tmux.conf" | grep -v '^#')"
 }
 
-wire_bash() {
-  if grep -qE '^\s*export EDITOR=nvim' "$HOME/.bashrc" 2>/dev/null; then
-    log "~/.bashrc already sets EDITOR=nvim"
+# EDITOR/VISUAL/alias go to the login shell's rc: zsh on macOS, bash elsewhere.
+shell_rc() { case "${SHELL:-}" in *zsh) echo "$HOME/.zshrc" ;; *) echo "$HOME/.bashrc" ;; esac; }
+wire_shell() {
+  local rc
+  rc="$(shell_rc)"
+  if grep -qE '^[[:space:]]*export EDITOR=nvim' "$rc" 2>/dev/null; then
+    log "$(tilde "$rc") already sets EDITOR=nvim"
     return
   fi
-  append_block "$HOME/.bashrc" "$(printf 'export EDITOR=nvim\nexport VISUAL=nvim\nalias vim=nvim')"
+  append_block "$rc" "$(printf 'export EDITOR=nvim\nexport VISUAL=nvim\nalias vim=nvim')"
 }
 
 # Merge claude/hooks.json into ~/.claude/settings.json. Any existing hook running
@@ -283,14 +361,15 @@ setup_nvim() {
   changed "Neovim plugins, parsers and language servers installed"
 }
 
-# ---- run ---------------------------------------------------------------------
+# ---- run -----------------------------------------------------------------------
 
+log "platform: $PLATFORM"
 [ "$DRY" = 1 ] && log "dry run: nothing will be written"
 [ "$SKIP_NVIM" = 1 ] || install_tools
 link_dir "$REPO/agentnav" "$CONFIG_DIR"
 link_dir "$REPO/nvim" "$NVIM_CONFIG"
 wire_tmux
-wire_bash
+wire_shell
 wire_hooks
 reload_tmux
 [ "$SKIP_NVIM" = 1 ] || setup_nvim
