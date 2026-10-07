@@ -1,12 +1,13 @@
-# agentnav
+# squadmux
 
-A multi-agent workbench for [Claude Code](https://claude.com/claude-code) inside tmux.
+Claude Code multi-agent workbench for tmux and Neovim.
 
-When Claude Code spawns a team of agents, each one gets its own tmux pane. agentnav keeps them
-in one window: a sidebar lists the agents with live status dots, one agent sits in the main slot,
-and a context panel shows a file tree of the project. Click or arrow to an agent to swap it in;
-open a file and it lands in a shared Neovim instance in the same slot. The Neovim config is a small
-TypeScript-first setup (LSP, treesitter, telescope, completion) so hand edits feel like an IDE.
+When [Claude Code](https://claude.com/claude-code) spawns a team of agents, each one gets its own
+tmux pane. squadmux keeps them in one window: **agentnav**, the sidebar component, lists the agents
+with live status dots, one agent sits in the main slot, and a context panel shows a file tree of the
+project. Click or arrow to an agent to swap it in; open a file and it lands in a shared Neovim
+instance in the same slot. The Neovim config is a small TypeScript-first setup (LSP, treesitter,
+telescope, completion) so hand edits feel like an IDE.
 
 ```
 ┌─ AGENTS ──────┬────────────────────────────────────────────┐
@@ -25,7 +26,8 @@ TypeScript-first setup (LSP, treesitter, telescope, completion) so hand edits fe
 
 ## What you get
 
-- `agentnav/` — the sidebar and context panel (bash + a little Python), plus the tmux mouse bindings
+- `agentnav/` — the sidebar and context panel (bash + a little Python), plus the tmux mouse bindings;
+  it installs to `~/.config/agentnav` and keeps that name
 - `nvim/` — a ~170-line Lua Neovim config: lazy.nvim, vtsls / lua_ls / bashls via mason, treesitter,
   telescope, gitsigns, blink.cmp, format on save
 - `install.sh` — installs Neovim, ripgrep, fd and the tree-sitter CLI into `~/.local` (no sudo),
@@ -41,8 +43,8 @@ TypeScript-first setup (LSP, treesitter, telescope, completion) so hand edits fe
 ## Install
 
 ```sh
-git clone https://github.com/<you>/agentnav.git ~/.local/src/agentnav
-cd ~/.local/src/agentnav && ./install.sh
+git clone https://github.com/tamichael90/squadmux.git ~/.local/src/squadmux
+cd ~/.local/src/squadmux && ./install.sh
 ```
 
 `install.sh` is idempotent. It downloads the latest stable Neovim, ripgrep, fd and tree-sitter CLI

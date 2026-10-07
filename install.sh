@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Installs the agentnav workbench without sudo: Neovim, ripgrep, fd and the tree-sitter CLI into
+# Installs squadmux without sudo: Neovim, ripgrep, fd and the tree-sitter CLI into
 # $PREFIX, links this repo's agentnav/ and nvim/ into ~/.config, and wires tmux, bash and Claude Code hooks.
 # Usage: ./install.sh [--dry-run] [--skip-nvim] [--reinstall-tools]
 #   --dry-run           print what would change, touch nothing
-#   --skip-nvim         agentnav + configs only: no tool downloads, no plugin sync
+#   --skip-nvim         agentnav sidebar + configs only: no tool downloads, no plugin sync
 #   --reinstall-tools   re-download nvim/rg/fd/tree-sitter even if already present
 #   AGENTNAV_PREFIX     binaries go to $AGENTNAV_PREFIX/bin, Neovim to $AGENTNAV_PREFIX/nvim (default ~/.local)
 #   AGENTNAV_CONFIG     where agentnav/ is linked (default ~/.config/agentnav)
