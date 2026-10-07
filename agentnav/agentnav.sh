@@ -17,7 +17,18 @@ HEADER=2 # lines above the first clickable row in either panel
 TEAMS_DIR="$HOME/.claude/teams"
 T="" # tmux session all commands are scoped to
 STATE="" # per-session directory holding the context panel's state
+nvim_version_ok() { # <nvim>: true when it is >= 0.11, what the bundled config needs
+  local v
+  v="$(NVIM_LOG_FILE=/dev/null "$1" --version 2>/dev/null | sed -n 's/^NVIM v\([0-9]*\.[0-9]*\).*/\1/p')"
+  [ -n "$v" ] && [ "$(printf '%s\n' 0.11 "$v" | sort -V | head -1)" = 0.11 ]
+}
 NVIM="$(command -v nvim 2>/dev/null)" # viewer editor; empty falls back to less
+# Prefer the installer's Neovim over one found earlier on PATH (e.g. an older distro package).
+NVIM_PREFERRED="${AGENTNAV_PREFIX:-$HOME/.local}/bin/nvim"
+if [ -x "$NVIM_PREFERRED" ] && { [ -z "$NVIM" ] || [ "$(readlink -f "$NVIM_PREFERRED")" != "$(readlink -f "$NVIM")" ]; } &&
+  nvim_version_ok "$NVIM_PREFERRED"; then
+  NVIM="$NVIM_PREFERRED"
+fi
 command -v timeout >/dev/null 2>&1 || NVIM="" # nvim_rpc needs coreutils timeout; start() says so
 
 use_session_of() {
@@ -564,9 +575,9 @@ ctx_activate() {
   local cur="$1" client="$2" line kind path
   if [ "$cur" = 0 ]; then
     if command -v fd >/dev/null 2>&1 && command -v fzf >/dev/null 2>&1; then
-      tmux display-popup -E -w 80% -h 70% ${client:+-c "$client"} "$SELF ctxpick $(opt @agentnav_context)"
+      tmux display-popup -E -w 80% -h 70% ${client:+-c "$client"} "'$SELF' ctxpick $(opt @agentnav_context)"
     else
-      tmux command-prompt -t "$client" -p "Add folder:" "run-shell -b \"$SELF ctxadd '%%' $(opt @agentnav_context)\""
+      tmux command-prompt -t "$client" -p "Add folder:" "run-shell -b \"'$SELF' ctxadd '%%' $(opt @agentnav_context)\""
     fi
     return
   fi

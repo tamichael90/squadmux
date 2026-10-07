@@ -94,7 +94,7 @@ found() { command -v "$1" 2>/dev/null || echo "$PREFIX/bin/$1"; }
 tool_ok() {
   local v
   [ "$1" = nvim ] || return 0
-  v="$("$(found nvim)" --version 2>/dev/null | sed -n 's/^NVIM v\([0-9]*\.[0-9]*\).*/\1/p')"
+  v="$(NVIM_LOG_FILE=/dev/null "$(found nvim)" --version 2>/dev/null | sed -n 's/^NVIM v\([0-9]*\.[0-9]*\).*/\1/p')"
   [ -n "$v" ] && [ "$(printf '%s\n' 0.11 "$v" | sort -V | head -1)" = 0.11 ] && return 0
   warn "found Neovim ${v:-?} at $(found nvim); the config needs >= 0.11, installing a current one to $PREFIX"
   return 1
@@ -153,6 +153,10 @@ install_tools() {
   *":$PREFIX/bin:"*) ;;
   *) warn "$PREFIX/bin is not on your PATH; add it to your shell rc" ;;
   esac
+  if [ -x "$PREFIX/bin/nvim" ] && command -v nvim >/dev/null 2>&1 &&
+    [ "$(readlink -f "$(command -v nvim)")" != "$(readlink -f "$PREFIX/bin/nvim")" ]; then
+    warn "$(command -v nvim) comes before $PREFIX/bin/nvim on your PATH; the shell and agentnav will use it"
+  fi
 }
 
 # ---- config links ------------------------------------------------------------
@@ -222,9 +226,14 @@ for event, entries in wanted.items():
         if not mine:
             existing.append(entry)
             added += 1
-        elif mine[0]["command"] != command:
-            mine[0]["command"] = command
-            updated += 1
+        else:
+            if mine[0]["command"] != command:
+                mine[0]["command"] = command
+                updated += 1
+            for e in existing:  # collapse pre-existing duplicates (by identity: dicts compare equal after rewriting)
+                e["hooks"] = [h for h in e.get("hooks", []) if not any(h is extra for extra in mine[1:])]
+            updated += len(mine) - 1
+            existing[:] = [e for e in existing if e.get("hooks")]
 # Stray agentnav hooks under events we no longer define still get the current path.
 for entries in hooks.values():
     for h in (h for e in entries for h in e.get("hooks", [])):
@@ -242,6 +251,7 @@ if (added or updated) and not dry:
 print(added, updated)
 PY
 )"
+  [ -n "$result" ] || die "hook merge produced no result; $CLAUDE_SETTINGS was not changed"
   set -- $result
   if [ "$1" = 0 ] && [ "$2" = 0 ]; then log "Claude Code hooks already present in $(tilde "$CLAUDE_SETTINGS")"
   elif [ "$DRY" = 1 ]; then dry "add $1 and rewrite $2 agentnav hook entries in $CLAUDE_SETTINGS (backup first)"
