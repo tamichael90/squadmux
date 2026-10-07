@@ -301,7 +301,8 @@ sidebar() {
 
 # Render the tree for the current roots/open set. Writes $STATE/rows (one "D|F<tab>path" per
 # visible row) and prints the panel text, scrolled by $STATE/scroll and sized to the pane.
-# $STATE/ctxcursor is the keyboard cursor: "?" for the search row, "+" for "+ add folder", else a path;
+# $STATE/ctxcursor is the keyboard cursor: "?" for the search row, "+" for "+ add folder", else a path
+# (the sentinels are not absolute paths, so even a root at "/" cannot collide with them);
 # it survives tree changes, and a path hidden by a collapse resolves to its nearest visible ancestor.
 # $STATE/scroll_to_cursor, when present, asks for one render that scrolls the cursor row into view.
 ctx_render() {
@@ -689,7 +690,8 @@ ctx_open_path() {
 have_picker() { command -v fd >/dev/null 2>&1 && command -v fzf >/dev/null 2>&1; }
 
 # ctx_modal <row>: run ctx_activate for a search/add-folder row in a detached run-shell so the
-# panel keeps rendering and reading keys while the popup or prompt is up.
+# panel keeps rendering and reading keys while the popup or prompt is up. A second request while a
+# popup is open is ignored by tmux itself (display-popup returns 0 without starting the command).
 ctx_modal() {
   tmux run-shell -b "$(printf '%q' "$SELF") ctxactivate $1 $(tmux display -p -t "$TMUX_PANE" '#{client_name}') $TMUX_PANE"
 }
@@ -700,10 +702,12 @@ popup() {
 }
 
 # prompt <client> <label> <subcommand>: tmux prompt fallback. The template is re-parsed by tmux, which
-# eats shell escapes, so the script path travels through the server environment instead of inline.
+# eats shell escapes and treats %1..%9 as response placeholders (so a pane id like %110 cannot appear
+# in it); the script path and the context pane travel through the server environment instead.
 prompt() {
   tmux set-environment -g AGENTNAV_SELF "$SELF"
-  tmux command-prompt -t "$1" -p "$2" "run-shell -b \"\\\"\\\$AGENTNAV_SELF\\\" $3 '%%' $(opt @agentnav_context)\""
+  tmux set-environment -g AGENTNAV_CTX "$(opt @agentnav_context)"
+  tmux command-prompt -t "$1" -p "$2" "run-shell -b \"\\\"\\\$AGENTNAV_SELF\\\" $3 '%%' \\\"\\\$AGENTNAV_CTX\\\"\""
 }
 
 # ctx_activate <row> <client>: what Enter or a click does on a row (0 search, 1 add folder, else tree).
@@ -734,7 +738,14 @@ ctx_click() {
     cur=$((y - CTX_HEADER + scroll + 2))
     ;;
   esac
-  ctx_activate "$cur" "$client" && ctx_set_cursor "$cur"
+  if [ "$cur" -le 1 ]; then
+    # Popups and prompts block until dismissed, and a search selection moves the cursor itself,
+    # so mark the clicked row first rather than after.
+    ctx_set_cursor "$cur"
+    ctx_activate "$cur" "$client"
+  else
+    ctx_activate "$cur" "$client" && ctx_set_cursor "$cur"
+  fi
 }
 
 # ---- lifecycle -----------------------------------------------------------
