@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # agentnav: tmux sidebar listing Claude Code agent panes; click a name to swap it into the main slot.
 # Below it, a CONTEXT panel shows a file tree of chosen folders; click a file to open it (in Neovim,
-# or less if nvim is missing) in a viewer pane that is swapped into the main slot. "+ add folder"
-# opens an fd+fzf popup when both are installed, else a tmux prompt; relative paths resolve against
-# the main pane's cwd.
+# or less if nvim is missing) in a viewer pane that is swapped into the main slot. "search files" (or
+# "/") and "+ add folder" open fd+fzf popups when both are installed, else tmux prompts; relative paths
+# resolve against the main pane's cwd.
 # Usage: agentnav.sh start [lead-pane] | stop | auto <pane> | click <row> <pane> | show <pane>
 #        | state <working|waiting|idle> | ctxclick <row> <pane> <client> | ctxadd <dir> [pane] | ctxrm <dir> [pane]
-#        | ctxscroll <+n|-n> <pane> | ctxpick <pane> | open <file> [pane]
+#        | ctxscroll <+n|-n> <pane> | ctxpick <pane> | ctxsearch <pane> | ctxopen <path> <pane> | open <file> [pane]
 # The click bindings and auto-start hook live in agentnav.tmux. Both panels also take Up/Down/Enter
 # (and Left/Right in CONTEXT) when focused; the pane process reads the keys itself.
 set -u
@@ -29,7 +29,8 @@ version_ge() { # version_ge 3.6 3.3: major.minor comparison without sort -V
 
 SELF="$(realpath_f "$0")"
 WIDTH=24
-HEADER=2 # lines above the first clickable row in either panel
+HEADER=2 # sidebar lines above the first agent row
+CTX_HEADER=3 # context lines above the first tree row: title, "search files", "add folder"
 TEAMS_DIR="$HOME/.claude/teams"
 T="" # tmux session all commands are scoped to
 STATE="" # per-session directory holding the context panel's state
@@ -299,12 +300,13 @@ sidebar() {
 
 # Render the tree for the current roots/open set. Writes $STATE/rows (one "D|F<tab>path" per
 # visible row) and prints the panel text, scrolled by $STATE/scroll and sized to the pane.
-# $STATE/ctxcursor is the keyboard cursor: "+" for the "+ add folder" row, else a path; it survives
-# tree changes, and a path hidden by a collapse resolves to its nearest visible ancestor.
+# $STATE/ctxcursor is the keyboard cursor: "/" for the search row, "+" for "+ add folder", else a path;
+# it survives tree changes, and a path hidden by a collapse resolves to its nearest visible ancestor.
+# $STATE/scroll_to_cursor, when present, asks for one render that scrolls the cursor row into view.
 ctx_render() {
   local height="$1" selected
   selected="$(opt @agentnav_ctx_file)"
-  python3 - "$STATE" "$WIDTH" "$height" "$HEADER" "$selected" <<'PY'
+  python3 - "$STATE" "$WIDTH" "$height" "$CTX_HEADER" "$selected" <<'PY'
 import os, sys
 state, width, height, header, selected = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 SKIP = {".git", "node_modules"}
@@ -353,29 +355,36 @@ with open(os.path.join(state, "rows"), "w") as f:
     for kind, path, _, _ in rows:
         f.write(f"{kind}\t{path}\n")
 
-# Resolve the cursor path to a 1-based row (0 = add folder, -1 = none), walking up to a visible ancestor.
+# Resolve the cursor to a row: 0 = search, 1 = add folder, k + 2 = rows[k], -1 = none; a hidden path
+# resolves to its nearest visible ancestor.
 paths = [path for _, path, _, _ in rows]
-cursor = 0 if cursor_path == "+" else -1
-if cursor_path and cursor_path != "+":
+cursor = {"/": 0, "+": 1}.get(cursor_path, -1)
+if cursor_path and cursor_path not in ("/", "+"):
     p = cursor_path
     while p not in paths and os.path.dirname(p) != p:
         p = os.path.dirname(p)
     if p in paths:
-        cursor = paths.index(p) + 1
+        cursor = paths.index(p) + 2
         if p != cursor_path:
             with open(os.path.join(state, "ctxcursor"), "w") as f:
                 f.write(p)
 
 visible = max(height - header, 0)
+flag = os.path.join(state, "scroll_to_cursor")
+if os.path.exists(flag):
+    os.remove(flag)
+    if cursor >= 2 and not scroll <= cursor - 2 < scroll + visible:
+        scroll = max(0, cursor - 2 - visible // 2)
 scroll = max(0, min(scroll, max(len(rows) - visible, 0)))
 with open(os.path.join(state, "scroll"), "w") as f:
     f.write(str(scroll))
 
-add_style = "\033[7m" if cursor == 0 else "\033[2m"
-out = ["\033[H\033[1m CONTEXT\033[0m\033[K", add_style + "  + add folder\033[K\033[0m"]
+def fixed(label, active):
+    return ("\033[7m" if active else "\033[2m") + label + "\033[K\033[0m"
+out = ["\033[H\033[1m CONTEXT\033[0m\033[K", fixed("  ⌕ search files", cursor == 0), fixed("  + add folder", cursor == 1)]
 for i, (kind, path, depth, label) in enumerate(rows[scroll:scroll + visible], scroll):
     text = (" " * (1 + 2 * depth) + label)[:width]
-    if i == cursor - 1:
+    if i == cursor - 2:
         out.append("\033[7m" + text + "\033[K\033[0m")
     elif kind == "F" and path == selected:
         out.append("\033[1m" + text + "\033[22m\033[K")
@@ -401,37 +410,43 @@ context() {
 
 ctx_is_open() { grep -qxF -- "$1" "$STATE/open" 2>/dev/null; }
 
-# Row number of the stored cursor (0 = add folder); prints -1 when unset or not visible.
+# Row number of the stored cursor (0 = search, 1 = add folder, k + 2 = rows[k]); -1 when unset or hidden.
 ctx_cursor_row() {
   local cur
   cur="$(cat "$STATE/ctxcursor" 2>/dev/null)"
   case "$cur" in
   '') echo -1 ;;
-  +) echo 0 ;;
-  *) awk -F'\t' -v p="$cur" '$2 == p { print NR; found = 1; exit } END { if (!found) print -1 }' "$STATE/rows" 2>/dev/null || echo -1 ;;
+  /) echo 0 ;;
+  +) echo 1 ;;
+  *) awk -F'\t' -v p="$cur" '$2 == p { print NR + 1; found = 1; exit } END { if (!found) print -1 }' "$STATE/rows" 2>/dev/null || echo -1 ;;
   esac
 }
 
-# ctx_set_cursor <row>: store the path at that row ("+" for row 0).
+# ctx_set_cursor <row>: store the sentinel or the path at that row.
 ctx_set_cursor() {
-  if [ "$1" -le 0 ]; then printf '+'; else sed -n "${1}p" "$STATE/rows" | cut -f2; fi >"$STATE/ctxcursor"
+  if [ "$1" -le 0 ]; then printf '/'; elif [ "$1" = 1 ]; then printf '+'; else sed -n "$(($1 - 1))p" "$STATE/rows" | cut -f2; fi >"$STATE/ctxcursor"
 }
 
 # ctx_key <key> <pane-height>: move the context cursor, scrolling the tree when it leaves the
 # visible window, or act on the row under it.
 ctx_key() {
-  local key="$1" visible=$(($2 - HEADER)) cur n scroll line kind path
+  local key="$1" visible=$(($2 - CTX_HEADER)) cur n scroll line kind path
   n="$(wc -l <"$STATE/rows" 2>/dev/null | tr -d ' ' || echo 0)"
   cur="$(ctx_cursor_row)"
   case "$key" in
   up) cur=$((cur > 0 ? cur - 1 : 0)) ;;
-  down) cur=$((cur < n ? cur + 1 : n)) ;;
+  down) cur=$((cur < n + 1 ? cur + 1 : n + 1)) ;;
   enter)
     [ "$cur" -ge 0 ] && ctx_activate "$cur" "$(tmux display -p -t "$TMUX_PANE" '#{client_name}')"
     return
     ;;
+  /)
+    ctx_activate 0 "$(tmux display -p -t "$TMUX_PANE" '#{client_name}')"
+    return
+    ;;
   left | right)
-    line="$(sed -n "${cur}p" "$STATE/rows" 2>/dev/null)"
+    [ "$cur" -ge 2 ] || return
+    line="$(sed -n "$((cur - 1))p" "$STATE/rows" 2>/dev/null)"
     kind="${line%%	*}"
     path="${line#*	}"
     [ "$kind" = D ] || return
@@ -441,12 +456,12 @@ ctx_key() {
   *) return ;;
   esac
   ctx_set_cursor "$cur"
-  [ "$cur" -ge 1 ] || return
+  [ "$cur" -ge 2 ] || return
   scroll="$(cat "$STATE/scroll" 2>/dev/null || echo 0)"
-  if [ $((cur - 1)) -lt "$scroll" ]; then
-    printf '%s' $((cur - 1)) >"$STATE/scroll"
-  elif [ $((cur - 1)) -ge $((scroll + visible)) ]; then
-    printf '%s' $((cur - visible)) >"$STATE/scroll"
+  if [ $((cur - 2)) -lt "$scroll" ]; then
+    printf '%s' $((cur - 2)) >"$STATE/scroll"
+  elif [ $((cur - 2)) -ge $((scroll + visible)) ]; then
+    printf '%s' $((cur - 1 - visible)) >"$STATE/scroll"
   fi
 }
 
@@ -594,7 +609,6 @@ close_viewer() {
   alive "$p" && tmux kill-pane -t "$p"
 }
 
-# ctx_activate <cursor> <client>: what Enter or a click does on a row (see ctx_render for numbering).
 # Runs inside the add-folder popup: fd lists directories under ctx_base, fzf picks one. Alt-Enter
 # (or Enter with no match) adds the typed query as a path instead; ESC adds nothing.
 # fzf prints: query, then the key that ended it ("" for Enter), then the selection.
@@ -615,20 +629,75 @@ ctx_pick() {
   ctx_add "$dir" || sleep 1.5 # keep the popup up long enough to read the error
 }
 
+# ctx_reveal <file>: expand the directories from the file's root down to it, put the cursor on it
+# and ask the renderer to scroll it into view.
+ctx_reveal() {
+  local file="$1" r d rest
+  touch "$STATE/open"
+  while IFS= read -r r; do
+    case "$file" in "$r"/*) ;; *) continue ;; esac
+    d="$r"
+    rest="${file#"$r"/}"
+    while :; do
+      ctx_is_open "$d" || printf '%s\n' "$d" >>"$STATE/open"
+      case "$rest" in */*) d="$d/${rest%%/*}"; rest="${rest#*/}" ;; *) break ;; esac
+    done
+    break
+  done <"$STATE/roots"
+  printf '%s' "$file" >"$STATE/ctxcursor"
+  : >"$STATE/scroll_to_cursor"
+}
+
+# Runs inside the search popup: fd lists files under every root, fzf picks one. Lines are
+# "<root basename>/<relative path><TAB><absolute path>"; fzf shows the first field.
+ctx_search() {
+  local roots=() r sel abs preview
+  [ -s "$STATE/roots" ] || return 0
+  mapfile -t roots <"$STATE/roots"
+  if command -v bat >/dev/null 2>&1; then preview='bat --color=always --style=numbers --line-range=:200 {2}'; else preview='head -200 {2}'; fi
+  sel="$(for r in "${roots[@]}"; do
+    fd --type f --hidden --exclude .git --exclude node_modules . "$r" 2>/dev/null |
+      awk -v r="$r/" -v b="$(basename "$r")" 'index($0, r) == 1 { print b "/" substr($0, length(r) + 1) "\t" $0 }'
+  done | fzf --prompt 'Open file> ' --height 100% --reverse --delimiter '\t' --with-nth 1 \
+    --preview "$preview" --preview-window 'right,50%,border-left' --header "files under: ${roots[*]}")" || return 0
+  abs="${sel#*	}"
+  [ -f "$abs" ] || return 0
+  ctx_reveal "$abs"
+  open_file "$abs"
+}
+
+# Search fallback without fd/fzf: open a typed path, relative to ctx_base, revealing it in the tree.
+ctx_open_path() {
+  local file="${1/#\~/$HOME}"
+  case "$file" in /*) ;; *) file="$(ctx_base)/$file" ;; esac
+  file="$(realpath_f "$file")"
+  [ -f "$file" ] || { echo "not a file: $1" >&2; return 1; }
+  ctx_reveal "$file"
+  open_file "$file"
+}
+
+have_picker() { command -v fd >/dev/null 2>&1 && command -v fzf >/dev/null 2>&1; }
+
+# popup <client> <subcommand>: fd+fzf picker in a tmux popup running this script.
+popup() {
+  tmux display-popup -E -w 80% -h 70% ${1:+-c "$1"} "$(printf '%q' "$SELF") $2 $(opt @agentnav_context)"
+}
+
+# prompt <client> <label> <subcommand>: tmux prompt fallback. The template is re-parsed by tmux, which
+# eats shell escapes, so the script path travels through the server environment instead of inline.
+prompt() {
+  tmux set-environment -g AGENTNAV_SELF "$SELF"
+  tmux command-prompt -t "$1" -p "$2" "run-shell -b \"\\\"\\\$AGENTNAV_SELF\\\" $3 '%%' $(opt @agentnav_context)\""
+}
+
+# ctx_activate <row> <client>: what Enter or a click does on a row (0 search, 1 add folder, else tree).
 ctx_activate() {
   local cur="$1" client="$2" line kind path
-  if [ "$cur" = 0 ]; then
-    if command -v fd >/dev/null 2>&1 && command -v fzf >/dev/null 2>&1; then
-      tmux display-popup -E -w 80% -h 70% ${client:+-c "$client"} "$(printf '%q' "$SELF") ctxpick $(opt @agentnav_context)"
-    else
-      # The prompt template is re-parsed by tmux, which eats shell escapes, so the script path travels
-      # through the server environment instead of inline (survives spaces and apostrophes).
-      tmux set-environment -g AGENTNAV_SELF "$SELF"
-      tmux command-prompt -t "$client" -p "Add folder:" "run-shell -b \"\\\"\\\$AGENTNAV_SELF\\\" ctxadd '%%' $(opt @agentnav_context)\""
-    fi
-    return
-  fi
-  line="$(sed -n "${cur}p" "$STATE/rows" 2>/dev/null)"
+  case "$cur" in
+  0) if have_picker; then popup "$client" ctxsearch; else prompt "$client" "Open file:" ctxopen; fi; return ;;
+  1) if have_picker; then popup "$client" ctxpick; else prompt "$client" "Add folder:" ctxadd; fi; return ;;
+  esac
+  line="$(sed -n "$((cur - 1))p" "$STATE/rows" 2>/dev/null)"
   [ -n "$line" ] || return 1
   kind="${line%%	*}"
   path="${line#*	}"
@@ -639,16 +708,16 @@ ctx_activate() {
 }
 
 ctx_click() {
-  local y="$1" client="$2" cur=0 scroll
-  if [ "$y" -lt $((HEADER - 1)) ]; then
-    tmux select-pane -t "$(opt @agentnav_context)"
-    return
-  fi
-  if [ "$y" != 1 ]; then
+  local y="$1" client="$2" cur scroll
+  case "$y" in
+  0) tmux select-pane -t "$(opt @agentnav_context)"; return ;; # title: just focus the panel
+  1) cur=0 ;;
+  2) cur=1 ;;
+  *)
     scroll="$(cat "$STATE/scroll" 2>/dev/null || echo 0)"
-    cur=$((y - HEADER + scroll + 1))
-    [ "$cur" -ge 1 ] || return
-  fi
+    cur=$((y - CTX_HEADER + scroll + 2))
+    ;;
+  esac
   ctx_activate "$cur" "$client" && ctx_set_cursor "$cur"
 }
 
@@ -740,6 +809,8 @@ show) use_session_of "${2:?pane}" && show "$2" ;;
 ctxclick) use_session_of "${3:?pane}" && ctx_click "${2:?row}" "${4:?client}" || true ;;
 ctxadd) use_session_of "${3:-${TMUX_PANE:?}}" && ctx_add "${2:?dir}" ;;
 ctxpick) use_session_of "${2:?pane}" && ctx_pick ;;
+ctxsearch) use_session_of "${2:?pane}" && ctx_search ;;
+ctxopen) use_session_of "${3:?pane}" && ctx_open_path "${2:?path}" ;;
 ctxrm) use_session_of "${3:-${TMUX_PANE:?}}" && ctx_rm "${2:?dir}" ;;
 ctxscroll) use_session_of "${3:?pane}" && ctx_scroll "${2:?delta}" ;;
 open) use_session_of "${3:-${TMUX_PANE:?}}" && open_file "${2:?file}" ;;
