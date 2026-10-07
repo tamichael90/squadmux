@@ -6,7 +6,8 @@
 # resolve against the main pane's cwd.
 # Usage: agentnav.sh start [lead-pane] | stop | auto <pane> | click <row> <pane> | show <pane>
 #        | state <working|waiting|idle> | ctxclick <row> <pane> <client> | ctxadd <dir> [pane] | ctxrm <dir> [pane]
-#        | ctxscroll <+n|-n> <pane> | ctxpick <pane> | ctxsearch <pane> | ctxopen <path> <pane> | open <file> [pane]
+#        | ctxscroll <+n|-n> <pane> | ctxpick <pane> | ctxsearch <pane> | ctxopen <path> <pane>
+#        | ctxactivate <row> <client> <pane> | open <file> [pane]
 # The click bindings and auto-start hook live in agentnav.tmux. Both panels also take Up/Down/Enter
 # (and Left/Right in CONTEXT) when focused; the pane process reads the keys itself.
 set -u
@@ -300,7 +301,7 @@ sidebar() {
 
 # Render the tree for the current roots/open set. Writes $STATE/rows (one "D|F<tab>path" per
 # visible row) and prints the panel text, scrolled by $STATE/scroll and sized to the pane.
-# $STATE/ctxcursor is the keyboard cursor: "/" for the search row, "+" for "+ add folder", else a path;
+# $STATE/ctxcursor is the keyboard cursor: "?" for the search row, "+" for "+ add folder", else a path;
 # it survives tree changes, and a path hidden by a collapse resolves to its nearest visible ancestor.
 # $STATE/scroll_to_cursor, when present, asks for one render that scrolls the cursor row into view.
 ctx_render() {
@@ -358,8 +359,8 @@ with open(os.path.join(state, "rows"), "w") as f:
 # Resolve the cursor to a row: 0 = search, 1 = add folder, k + 2 = rows[k], -1 = none; a hidden path
 # resolves to its nearest visible ancestor.
 paths = [path for _, path, _, _ in rows]
-cursor = {"/": 0, "+": 1}.get(cursor_path, -1)
-if cursor_path and cursor_path not in ("/", "+"):
+cursor = {"?": 0, "+": 1}.get(cursor_path, -1)
+if cursor_path and cursor_path not in ("?", "+"):
     p = cursor_path
     while p not in paths and os.path.dirname(p) != p:
         p = os.path.dirname(p)
@@ -416,7 +417,7 @@ ctx_cursor_row() {
   cur="$(cat "$STATE/ctxcursor" 2>/dev/null)"
   case "$cur" in
   '') echo -1 ;;
-  /) echo 0 ;;
+  '?') echo 0 ;;
   +) echo 1 ;;
   *) awk -F'\t' -v p="$cur" '$2 == p { print NR + 1; found = 1; exit } END { if (!found) print -1 }' "$STATE/rows" 2>/dev/null || echo -1 ;;
   esac
@@ -424,7 +425,7 @@ ctx_cursor_row() {
 
 # ctx_set_cursor <row>: store the sentinel or the path at that row.
 ctx_set_cursor() {
-  if [ "$1" -le 0 ]; then printf '/'; elif [ "$1" = 1 ]; then printf '+'; else sed -n "$(($1 - 1))p" "$STATE/rows" | cut -f2; fi >"$STATE/ctxcursor"
+  if [ "$1" -le 0 ]; then printf '?'; elif [ "$1" = 1 ]; then printf '+'; else sed -n "$(($1 - 1))p" "$STATE/rows" | cut -f2; fi >"$STATE/ctxcursor"
 }
 
 # ctx_key <key> <pane-height>: move the context cursor, scrolling the tree when it leaves the
@@ -437,13 +438,12 @@ ctx_key() {
   up) cur=$((cur > 0 ? cur - 1 : 0)) ;;
   down) cur=$((cur < n + 1 ? cur + 1 : n + 1)) ;;
   enter)
-    [ "$cur" -ge 0 ] && ctx_activate "$cur" "$(tmux display -p -t "$TMUX_PANE" '#{client_name}')"
+    [ "$cur" -ge 0 ] || return
+    # Rows 0/1 open a popup or prompt, which block until dismissed: run them outside the panel loop.
+    if [ "$cur" -le 1 ]; then ctx_modal "$cur"; else ctx_activate "$cur" ""; fi
     return
     ;;
-  /)
-    ctx_activate 0 "$(tmux display -p -t "$TMUX_PANE" '#{client_name}')"
-    return
-    ;;
+  /) ctx_modal 0; return ;;
   left | right)
     [ "$cur" -ge 2 ] || return
     line="$(sed -n "$((cur - 1))p" "$STATE/rows" 2>/dev/null)"
@@ -655,9 +655,19 @@ ctx_search() {
   [ -s "$STATE/roots" ] || return 0
   mapfile -t roots <"$STATE/roots"
   if command -v bat >/dev/null 2>&1; then preview='bat --color=always --style=numbers --line-range=:200 {2}'; else preview='head -200 {2}'; fi
-  sel="$(for r in "${roots[@]}"; do
+  # Prefix is the root's basename, or parent/basename when two roots share a basename.
+  local labels=() i j
+  for i in "${!roots[@]}"; do
+    labels[i]="$(basename "${roots[i]}")"
+    for j in "${!roots[@]}"; do
+      [ "$j" != "$i" ] && [ "$(basename "${roots[j]}")" = "${labels[i]}" ] &&
+        { labels[i]="$(basename "$(dirname "${roots[i]}")")/${labels[i]}"; break; }
+    done
+  done
+  sel="$(for i in "${!roots[@]}"; do
+    r="${roots[i]}"
     fd --type f --hidden --exclude .git --exclude node_modules . "$r" 2>/dev/null |
-      awk -v r="$r/" -v b="$(basename "$r")" 'index($0, r) == 1 { print b "/" substr($0, length(r) + 1) "\t" $0 }'
+      awk -v r="$r/" -v b="${labels[i]}" 'index($0, r) == 1 { print b "/" substr($0, length(r) + 1) "\t" $0 }'
   done | fzf --prompt 'Open file> ' --height 100% --reverse --delimiter '\t' --with-nth 1 \
     --preview "$preview" --preview-window 'right,50%,border-left' --header "files under: ${roots[*]}")" || return 0
   abs="${sel#*	}"
@@ -677,6 +687,12 @@ ctx_open_path() {
 }
 
 have_picker() { command -v fd >/dev/null 2>&1 && command -v fzf >/dev/null 2>&1; }
+
+# ctx_modal <row>: run ctx_activate for a search/add-folder row in a detached run-shell so the
+# panel keeps rendering and reading keys while the popup or prompt is up.
+ctx_modal() {
+  tmux run-shell -b "$(printf '%q' "$SELF") ctxactivate $1 $(tmux display -p -t "$TMUX_PANE" '#{client_name}') $TMUX_PANE"
+}
 
 # popup <client> <subcommand>: fd+fzf picker in a tmux popup running this script.
 popup() {
@@ -797,8 +813,7 @@ stop() {
 case "${1:-}" in
 state) [ -z "${TMUX_PANE:-}" ] || tmux set -p -t "$TMUX_PANE" @agentnav_state "${2:?state}" ;;
 start)
-  use_session_of "${2:-${TMUX_PANE:?run inside tmux or pass a pane}}"
-  start "${2:-$TMUX_PANE}"
+  use_session_of "${2:-${TMUX_PANE:?run inside tmux or pass a pane}}" && start "${2:-$TMUX_PANE}"
   ;;
 stop) use_session_of "${2:-${TMUX_PANE:?}}" && stop ;;
 sidebar) use_session_of "$TMUX_PANE" && sidebar ;;
@@ -810,6 +825,7 @@ ctxclick) use_session_of "${3:?pane}" && ctx_click "${2:?row}" "${4:?client}" ||
 ctxadd) use_session_of "${3:-${TMUX_PANE:?}}" && ctx_add "${2:?dir}" ;;
 ctxpick) use_session_of "${2:?pane}" && ctx_pick ;;
 ctxsearch) use_session_of "${2:?pane}" && ctx_search ;;
+ctxactivate) use_session_of "${4:?pane}" && ctx_activate "${2:?row}" "${3:?client}" || true ;;
 ctxopen) use_session_of "${3:?pane}" && ctx_open_path "${2:?path}" ;;
 ctxrm) use_session_of "${3:-${TMUX_PANE:?}}" && ctx_rm "${2:?dir}" ;;
 ctxscroll) use_session_of "${3:?pane}" && ctx_scroll "${2:?delta}" ;;
