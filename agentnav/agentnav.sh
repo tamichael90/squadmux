@@ -198,7 +198,7 @@ clear_state() {
   setopt -u @agentnav_rows
   setopt -u @agentnav_main
   if alive "$(opt @agentnav_viewer)"; then
-    # The viewer refused to quit (unsaved buffers): keep its pane id and socket so the next start reuses it.
+    # A viewer that stays (stop, or a refused :qa) keeps its pane id and socket so the next start reuses it.
     find "$STATE" -mindepth 1 ! -name nvim.sock -delete
   else
     setopt -u @agentnav_viewer
@@ -206,11 +206,16 @@ clear_state() {
   fi
 }
 
-kill_aux() {
+kill_context() {
   local p
-  close_viewer
   p="$(opt @agentnav_context)"
   alive "$p" && tmux kill-pane -t "$p"
+}
+
+# Team-gone shutdown: nothing is left to reconnect to, so ask the viewer to quit as well.
+kill_aux() {
+  close_viewer
+  kill_context
 }
 
 sidebar() {
@@ -660,15 +665,21 @@ auto() {
   done
 }
 
+# Explicit stop: a live nvim viewer keeps running (clear_state keeps its socket and pane id, so the
+# next start reconnects); only a less fallback viewer, which holds no state, is closed.
 stop() {
   local side viewer
   side="$(opt @agentnav_sidebar)"
-  kill_aux
+  viewer="$(opt @agentnav_viewer)"
+  if alive "$viewer"; then
+    nvim_state
+    [ $? = 1 ] && tmux kill-pane -t "$viewer"
+  fi
+  kill_context
   alive "$side" && tmux kill-pane -t "$side"
   clear_state
   echo "agentnav stopped (parked agents remain as tmux windows)"
-  viewer="$(opt @agentnav_viewer)"
-  alive "$viewer" && echo "viewer pane $viewer left open (nvim has unsaved buffers); the next start reuses it"
+  alive "$viewer" && echo "viewer pane $viewer left running (reconnects on next start)"
 }
 
 case "${1:-}" in
