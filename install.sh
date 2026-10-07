@@ -53,7 +53,7 @@ case "${SQM_UNAME_S:-$(uname -s)}-${SQM_UNAME_M:-$(uname -m)}" in
 Linux-x86_64) PLATFORM=linux-x86_64 ;;
 Darwin-arm64) PLATFORM=darwin-arm64 ;;
 Darwin-x86_64) PLATFORM=darwin-x86_64 ;;
-*) die "unsupported platform $(uname -s) $(uname -m); squadmux supports Linux x86_64 and macOS arm64/x86_64" ;;
+*) die "unsupported platform ${SQM_UNAME_S:-$(uname -s)} ${SQM_UNAME_M:-$(uname -m)}; squadmux supports Linux x86_64 and macOS arm64/x86_64" ;;
 esac
 DARWIN=0
 case "$PLATFORM" in darwin-*) DARWIN=1 ;; esac
@@ -115,6 +115,19 @@ case "$tmux_ver" in
 esac
 if [ "$DARWIN" = 1 ]; then
   xcode-select -p >/dev/null 2>&1 || warn "Xcode command line tools not found (xcode-select --install); nvim-treesitter needs a C compiler"
+  # agentnav.sh runs via '#!/usr/bin/env bash' from tmux and from Claude Code hooks: both need bash >= 4
+  # on PATH, or the sidebar refuses to start and the hooks fail silently.
+  bash_path="$(command -v bash)"
+  bash_ver="$("$bash_path" -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"')"
+  log "'#!/usr/bin/env bash' resolves to $bash_path (bash $bash_ver)"
+  version_ge "$bash_ver" 4.0 || warn "that is bash 3.x: put Homebrew's bin dir first on PATH (brew install bash) or agentnav will not run"
+  brew_bin="$(brew --prefix 2>/dev/null || echo /opt/homebrew)/bin"
+  if tmux list-sessions >/dev/null 2>&1; then
+    case ":$(tmux show-environment -g PATH 2>/dev/null | cut -d= -f2-):" in
+    *":$brew_bin:"*) log "running tmux server has $brew_bin on PATH" ;;
+    *) warn "the running tmux server's PATH lacks $brew_bin, so panels it starts would get bash 3.x; restart tmux from a shell with Homebrew on PATH" ;;
+    esac
+  fi
 else
   command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1 ||
     warn "no C compiler found; nvim-treesitter will not be able to build parsers (install gcc)"

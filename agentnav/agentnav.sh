@@ -48,17 +48,24 @@ if [ -x "$NVIM_PREFERRED" ] && { [ -z "$NVIM" ] || [ "$(realpath_f "$NVIM_PREFER
 fi
 [ -n "$TIMEOUT" ] || NVIM="" # nvim_rpc needs coreutils timeout; start() says so
 
+# State is keyed by tmux server pid and session id, so two servers (tmux -L …) never share a dir.
 use_session_of() {
+  local base server
+  base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+  base="${base%/}"
   T="$(tmux display -p -t "$1" '#{session_id}')"
-  STATE="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/agentnav-${T#\$}"
-  private_dir "$STATE"
+  server="$(tmux display -p '#{pid}')"
+  STATE="$base/agentnav-$server-${T#\$}"
+  private_dir "$STATE" || return 1
   # Socket paths are capped at ~104 bytes (macOS) / 107 (Linux); $TMPDIR on macOS is already ~50.
   SOCKDIR="$STATE"
-  [ "${#STATE}" -le 60 ] || { SOCKDIR="/tmp/sqm-$(id -u)-${T#\$}"; private_dir "$SOCKDIR"; }
+  [ "${#STATE}" -le 60 ] || { SOCKDIR="/tmp/sqm-$(id -u)-$server-${T#\$}"; private_dir "$SOCKDIR" || return 1; }
 }
+# Fails (rather than exits) so no-op click paths stay exit 0; start/sidebar/context stop on it.
 private_dir() {
-  mkdir -p "$1" && chmod 700 "$1"
-  [ -O "$1" ] || { echo "agentnav: $1 not owned by ${USER:-$(id -un)}" >&2; exit 1; }
+  mkdir -p "$1" && chmod 700 "$1" && [ -O "$1" ] && return 0
+  echo "agentnav: cannot use $1 (not owned by ${USER:-$(id -un)} or not writable)" >&2
+  return 1
 }
 opt() { tmux show -t "$T" -qv "$1" 2>/dev/null; }
 setopt() { tmux set -t "$T" "$@"; }
