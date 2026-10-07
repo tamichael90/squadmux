@@ -12,7 +12,11 @@
 set -euo pipefail
 [ "${BASH_VERSINFO[0]}" -ge 4 ] || { echo "install.sh: bash >= 4 required (macOS: brew install bash, then run with that bash)" >&2; exit 1; }
 
-REPO="$(cd "$(dirname "$0")" && pwd -P)"
+READLINK="$(command -v greadlink || command -v readlink || true)"
+realpath_f() { # readlink -f where it exists (GNU, macOS 12.3+), else python
+  if [ -n "$READLINK" ] && "$READLINK" -f / >/dev/null 2>&1; then "$READLINK" -f "$1"; else python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; fi
+}
+REPO="$(dirname "$(realpath_f "$0")")" # follows a symlinked install.sh too
 PREFIX="${AGENTNAV_PREFIX:-$HOME/.local}"
 CONFIG_DIR="${AGENTNAV_CONFIG:-$HOME/.config/agentnav}"
 NVIM_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
@@ -40,9 +44,6 @@ dry() { printf '    [dry-run] %s\n' "$*"; }
 tilde() { case "$1" in "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
 version_ge() { # version_ge 3.6 3.3: major.minor comparison (BSD sort has no -V)
   awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, "."); exit !(x[1] + 0 > y[1] + 0 || (x[1] + 0 == y[1] + 0 && x[2] + 0 >= y[2] + 0)) }'
-}
-realpath_f() { # readlink -f where it exists (GNU, macOS 12.3+), else python
-  if "${READLINK:-readlink}" -f / >/dev/null 2>&1; then "${READLINK:-readlink}" -f "$1"; else python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; fi
 }
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 
@@ -90,7 +91,6 @@ for tool in tmux git python3 curl tar gzip npm; do
   command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
 command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1 || missing+=("timeout (coreutils)")
-READLINK="$(command -v greadlink || command -v readlink || true)"
 [ -n "$READLINK" ] && "$READLINK" -f / >/dev/null 2>&1 || missing+=("readlink -f (coreutils)")
 command -v flock >/dev/null 2>&1 || missing+=("flock")
 if [ "${#missing[@]}" -gt 0 ]; then

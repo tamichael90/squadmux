@@ -619,9 +619,12 @@ ctx_activate() {
   local cur="$1" client="$2" line kind path
   if [ "$cur" = 0 ]; then
     if command -v fd >/dev/null 2>&1 && command -v fzf >/dev/null 2>&1; then
-      tmux display-popup -E -w 80% -h 70% ${client:+-c "$client"} "'$SELF' ctxpick $(opt @agentnav_context)"
+      tmux display-popup -E -w 80% -h 70% ${client:+-c "$client"} "$(printf '%q' "$SELF") ctxpick $(opt @agentnav_context)"
     else
-      tmux command-prompt -t "$client" -p "Add folder:" "run-shell -b \"'$SELF' ctxadd '%%' $(opt @agentnav_context)\""
+      # The prompt template is re-parsed by tmux, which eats shell escapes, so the script path travels
+      # through the server environment instead of inline (survives spaces and apostrophes).
+      tmux set-environment -g AGENTNAV_SELF "$SELF"
+      tmux command-prompt -t "$client" -p "Add folder:" "run-shell -b \"\\\"\\\$AGENTNAV_SELF\\\" ctxadd '%%' $(opt @agentnav_context)\""
     fi
     return
   fi

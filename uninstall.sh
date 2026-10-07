@@ -5,7 +5,12 @@
 # Usage: ./uninstall.sh   (same AGENTNAV_CONFIG / XDG_CONFIG_HOME overrides as install.sh)
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")" && pwd -P)"
+realpath_f() {
+  local rl
+  rl="$(command -v greadlink || command -v readlink || true)"
+  if [ -n "$rl" ] && "$rl" -f / >/dev/null 2>&1; then "$rl" -f "$1"; else python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; fi
+}
+REPO="$(dirname "$(realpath_f "$0")")"
 CONFIG_DIR="${AGENTNAV_CONFIG:-$HOME/.config/agentnav}"
 NVIM_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/nvim"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
@@ -13,11 +18,6 @@ MARK="agentnav"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 log() { printf '\033[1m==>\033[0m %s\n' "$*"; }
-realpath_f() {
-  local rl
-  rl="$(command -v greadlink || command -v readlink || true)"
-  if [ -n "$rl" ] && "$rl" -f / >/dev/null 2>&1; then "$rl" -f "$1"; else python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; fi
-}
 
 unlink_ours() {
   if [ -L "$1" ] && [ "$(realpath_f "$1")" = "$2" ]; then
