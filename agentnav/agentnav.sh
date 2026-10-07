@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # agentnav: tmux sidebar listing Claude Code agent panes; click a name to swap it into the main slot.
 # Below it, a CONTEXT panel shows a file tree of chosen folders; click a file to open it (in Neovim,
-# or less if nvim is missing) in a viewer pane that is swapped into the main slot.
+# or less if nvim is missing) in a viewer pane that is swapped into the main slot. "+ add folder"
+# opens an fd+fzf popup when both are installed, else a tmux prompt; relative paths resolve against
+# the main pane's cwd.
 # Usage: agentnav.sh start [lead-pane] | stop | auto <pane> | click <row> <pane> | show <pane>
 #        | state <working|waiting|idle> | ctxclick <row> <pane> <client> | ctxadd <dir> [pane] | ctxrm <dir> [pane]
-#        | ctxscroll <+n|-n> <pane> | open <file> [pane]
+#        | ctxscroll <+n|-n> <pane> | ctxpick <pane> | open <file> [pane]
 # The click bindings and auto-start hook live in agentnav.tmux. Both panels also take Up/Down/Enter
 # (and Left/Right in CONTEXT) when focused; the pane process reads the keys itself.
 set -u
@@ -412,9 +414,20 @@ ctx_toggle() {
   fi
 }
 
+# Directory that relative paths and the folder picker start from: the main pane's cwd, else the
+# first root, else $HOME.
+ctx_base() {
+  local d
+  d="$(tmux display -p -t "$(opt @agentnav_main)" '#{pane_current_path}' 2>/dev/null)"
+  [ -d "$d" ] || d="$(head -1 "$STATE/roots" 2>/dev/null)"
+  [ -d "$d" ] || d="$HOME"
+  printf '%s' "$d"
+}
+
 ctx_add() {
-  local dir
-  dir="$(readlink -f "${1/#\~/$HOME}" 2>/dev/null)"
+  local dir="${1/#\~/$HOME}"
+  case "$dir" in /*) ;; *) dir="$(ctx_base)/$dir" ;; esac
+  dir="$(readlink -f "$dir" 2>/dev/null)"
   [ -d "$dir" ] || { echo "not a directory: $1" >&2; return 1; }
   touch "$STATE/roots"
   grep -qxF -- "$dir" "$STATE/roots" || printf '%s\n' "$dir" >>"$STATE/roots"
@@ -527,10 +540,34 @@ close_viewer() {
 }
 
 # ctx_activate <cursor> <client>: what Enter or a click does on a row (see ctx_render for numbering).
+# Runs inside the add-folder popup: fd lists directories under ctx_base, fzf picks one. Alt-Enter
+# (or Enter with no match) adds the typed query as a path instead; ESC adds nothing.
+# fzf prints: query, then the key that ended it ("" for Enter), then the selection.
+ctx_pick() {
+  local base out dir rc
+  base="$(ctx_base)"
+  out="$(fd --type d --hidden --exclude .git --exclude node_modules . "$base" 2>/dev/null |
+    fzf --prompt 'Add folder> ' --height 100% --reverse --print-query --expect=alt-enter \
+      --header "under $base. Enter: add highlighted dir. Alt-Enter: add the path as typed (absolute, ~/ or relative)")"
+  rc=$?
+  case "$rc" in
+  0) [ "$(printf '%s\n' "$out" | sed -n 2p)" = alt-enter ] && dir="$(printf '%s\n' "$out" | sed -n 1p)" ||
+    dir="$(printf '%s\n' "$out" | sed -n 3p)" ;;
+  1) dir="$(printf '%s\n' "$out" | sed -n 1p)" ;; # nothing matched: take the query
+  *) return 0 ;;
+  esac
+  [ -n "$dir" ] || return 0
+  ctx_add "$dir" || sleep 1.5 # keep the popup up long enough to read the error
+}
+
 ctx_activate() {
   local cur="$1" client="$2" line kind path
   if [ "$cur" = 0 ]; then
-    tmux command-prompt -t "$client" -p "Add folder:" "run-shell -b \"$SELF ctxadd '%%' $(opt @agentnav_context)\""
+    if command -v fd >/dev/null 2>&1 && command -v fzf >/dev/null 2>&1; then
+      tmux display-popup -E -w 80% -h 70% ${client:+-c "$client"} "$SELF ctxpick $(opt @agentnav_context)"
+    else
+      tmux command-prompt -t "$client" -p "Add folder:" "run-shell -b \"$SELF ctxadd '%%' $(opt @agentnav_context)\""
+    fi
     return
   fi
   line="$(sed -n "${cur}p" "$STATE/rows" 2>/dev/null)"
@@ -637,6 +674,7 @@ click) use_session_of "${3:?pane}" && click "${2:?row}" || true ;;
 show) use_session_of "${2:?pane}" && show "$2" ;;
 ctxclick) use_session_of "${3:?pane}" && ctx_click "${2:?row}" "${4:?client}" || true ;;
 ctxadd) use_session_of "${3:-${TMUX_PANE:?}}" && ctx_add "${2:?dir}" ;;
+ctxpick) use_session_of "${2:?pane}" && ctx_pick ;;
 ctxrm) use_session_of "${3:-${TMUX_PANE:?}}" && ctx_rm "${2:?dir}" ;;
 ctxscroll) use_session_of "${3:?pane}" && ctx_scroll "${2:?delta}" ;;
 open) use_session_of "${3:-${TMUX_PANE:?}}" && open_file "${2:?file}" ;;

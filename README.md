@@ -30,7 +30,7 @@ telescope, completion) so hand edits feel like an IDE.
   it installs to `~/.config/agentnav` and keeps that name
 - `nvim/` — a ~170-line Lua Neovim config: lazy.nvim, vtsls / lua_ls / bashls via mason, treesitter,
   telescope, gitsigns, blink.cmp, format on save
-- `install.sh` — installs Neovim, ripgrep, fd and the tree-sitter CLI into `~/.local` (no sudo),
+- `install.sh` — installs Neovim, ripgrep, fd, fzf and the tree-sitter CLI into `~/.local` (no sudo),
   links the configs, and wires tmux, bash and the Claude Code hooks
 
 ## Requirements
@@ -38,6 +38,7 @@ telescope, completion) so hand edits feel like an IDE.
 - Linux x86_64 (other platforms: not yet)
 - tmux >= 3.3, git, python3, curl, tar, GNU coreutils (`timeout`, `readlink -f`), flock (util-linux)
 - A C compiler (gcc) for treesitter parsers
+- fd and fzf (optional, installed by `install.sh`): enable the folder picker on "+ add folder"
 - Claude Code; the status dots come from its hooks
 
 ## Install
@@ -47,7 +48,7 @@ git clone https://github.com/tamichael90/squadmux.git ~/.local/src/squadmux
 cd ~/.local/src/squadmux && ./install.sh
 ```
 
-`install.sh` is idempotent. It downloads the latest stable Neovim, ripgrep, fd and tree-sitter CLI
+`install.sh` is idempotent. It downloads the latest stable Neovim, ripgrep, fd, fzf and tree-sitter CLI
 from their GitHub releases, verifies each archive against the release's SHA-256 digest, and skips
 tools that are already present. It then symlinks `agentnav/` to `~/.config/agentnav` and `nvim/` to
 `~/.config/nvim` (an existing config is moved to `~/.config/nvim.bak.<timestamp>`, never deleted),
@@ -86,9 +87,14 @@ Panels take keys when they are the active tmux pane (click a panel's title, or `
 | ---------------------- | ------------------------------------------------------- |
 | `↑` / `↓`              | move the cursor; the tree scrolls to follow it          |
 | `←` / `→`              | collapse / expand a directory                           |
-| `Enter`                | toggle a directory, open a file, or prompt for a folder |
+| `Enter`                | toggle a directory, open a file, or add a folder        |
 | mouse wheel            | scroll                                                  |
 | click                  | same as `Enter` on that row; also focuses the panel     |
+
+"+ add folder" opens an fd + fzf picker rooted at the main pane's working directory (`Enter` adds the
+highlighted directory, `Alt-Enter` adds what you typed as an absolute, `~/` or relative path, ESC
+cancels). Without fd and fzf it falls back to a
+tmux prompt, where relative paths resolve against the same directory.
 
 Files open in one Neovim instance per tmux session (`nvim --listen`), reused across opens so
 unsaved buffers survive. `agentnav.sh ctxadd <dir>` / `ctxrm <dir>` manage the tree roots;
