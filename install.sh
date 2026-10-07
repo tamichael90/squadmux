@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs squadmux without sudo: Neovim, ripgrep, fd and the tree-sitter CLI into
+# Installs squadmux without sudo: Neovim, ripgrep, fd, fzf and the tree-sitter CLI into
 # $PREFIX, links this repo's agentnav/ and nvim/ into ~/.config, and wires tmux, bash and Claude Code hooks.
 # Usage: ./install.sh [--dry-run] [--skip-nvim] [--reinstall-tools]
 #   --dry-run           print what would change, touch nothing
@@ -119,6 +119,10 @@ install_tree_sitter() {
   gunzip -c "$1" >"$TMP/tree-sitter"
   install -m755 "$TMP/tree-sitter" "$PREFIX/bin/tree-sitter"
 }
+install_fzf() {
+  tar -xzf "$1" -C "$TMP" fzf
+  install -m755 "$TMP/fzf" "$PREFIX/bin/fzf"
+}
 
 install_tools() {
   [ "$DRY" = 1 ] || mkdir -p "$PREFIX/bin"
@@ -126,6 +130,7 @@ install_tools() {
   install_tool rg BurntSushi/ripgrep 'ripgrep-.*-x86_64-unknown-linux-musl\.tar\.gz' install_rg
   install_tool fd sharkdp/fd 'fd-.*-x86_64-unknown-linux-gnu\.tar\.gz' install_fd
   install_tool tree-sitter tree-sitter/tree-sitter 'tree-sitter-linux-x64\.gz' install_tree_sitter
+  install_tool fzf junegunn/fzf 'fzf-.*-linux_amd64\.tar\.gz' install_fzf
   case ":$PATH:" in
   *":$PREFIX/bin:"*) ;;
   *) warn "$PREFIX/bin is not on your PATH; add it to your shell rc" ;;
