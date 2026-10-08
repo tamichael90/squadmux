@@ -1,32 +1,21 @@
 -- Plugin specs for lazy.nvim.
-local theme = 'ayu_dark' -- any NvChad base46 theme name, e.g. 'dark_horizon' (https://nvchad.com/themes)
+local theme = 'onedark_vivid' -- onedarkpro variants: onedark, onedark_vivid, onedark_dark, onelight, vaporwave
 local ts_langs = { 'typescript', 'tsx', 'javascript', 'lua', 'bash', 'json', 'markdown', 'markdown_inline' }
 local ts_filetypes = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact', 'lua', 'sh', 'bash', 'json', 'markdown' }
 
 return {
-  -- Theme: NvChad's base46 used standalone (lua/nvconfig.lua is the small stub it reads). It compiles
-  -- one highlight file per integration into vim.g.base46_cache; we recompile when the cache is missing
-  -- or was built for another theme, then source every file.
+  -- Theme: One Dark Pro (olimorris/onedarkpro.nvim); `theme` above picks the variant.
   {
-    'NvChad/base46',
-    branch = 'v3.0',
+    'olimorris/onedarkpro.nvim',
     lazy = false,
     priority = 1000,
-    init = function() vim.g.base46_theme = theme end,
-    build = function() require('base46').compile() end,
     config = function()
       local ok = pcall(function()
-        local cache = vim.g.base46_cache
-        local stamp = cache .. '.theme'
-        local built = vim.fn.filereadable(stamp) == 1 and vim.fn.readfile(stamp)[1] or ''
-        if built ~= theme or not vim.uv.fs_stat(cache .. 'defaults') then
-          require('base46').compile()
-          vim.fn.writefile({ theme }, stamp)
-        end
-        for _, name in ipairs(vim.fn.readdir(cache)) do
-          if name:sub(1, 1) ~= '.' then dofile(cache .. name) end
-        end
-        vim.g.colors_name = theme
+        require('onedarkpro').setup({
+          styles = { comments = 'italic', keywords = 'italic', functions = 'italic' },
+          options = { cursorline = true },
+        })
+        vim.cmd.colorscheme(theme)
       end)
       if not ok then vim.cmd.colorscheme('default') end
     end,
