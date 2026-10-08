@@ -344,7 +344,8 @@ touched() {
   local pane="$1" file="${2:-}" first=0 last=0
   if [ -z "$file" ]; then
     # The JSON is kept (one file, overwritten) so the payload shape can be inspected.
-    read -r file first last < <(tee "$STATE/last-hook.json" | python3 -c '
+    # "first last path" so a path with spaces lands whole in the last read variable.
+    read -r first last file < <(tee "$STATE/last-hook.json" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 t = d.get("tool_input", {})
@@ -363,7 +364,7 @@ for hunk in (resp.get("structuredPatch") or []) if isinstance(resp, dict) else [
     if not first:  # a pure deletion: point at where it was
         first = last = hunk.get("newStart", 1)
     break
-print(path.replace("\t", " "), first, last)' 2>/dev/null)
+print(first, last, path)' 2>/dev/null)
   fi
   [ -n "$file" ] || return 0
   file="$(realpath_f "$file")"
@@ -403,8 +404,12 @@ follow_file() {
   open_file "$file" 0
   # Reload the buffer edited on disk, then put the cursor on the first changed line, centred, with the
   # changed lines (up to 8) flashed in DiffAdd for a moment so the eye follows the agent.
+  # The chunk only acts when the viewer really shows this file (open_file's --remote may have timed
+  # out while nvim answers again by now); the path goes in as a level-1 long-bracket literal.
   jump=""
-  [ "$first" -gt 0 ] 2>/dev/null && jump="<cmd>lua pcall(vim.api.nvim_win_set_cursor,0,{$first,0}) vim.cmd('normal! zz') local t={} for i=$first,math.min($last,$first+7) do t[#t+1]=i end local id=vim.fn.matchaddpos('DiffAdd',t) vim.defer_fn(function() pcall(vim.fn.matchdelete,id) end,2500)<CR>"
+  if [ "$first" -gt 0 ] 2>/dev/null; then
+    case "$file" in *']=]'*) ;; *) jump="<cmd>lua if vim.api.nvim_buf_get_name(0)==[=[$file]=] then pcall(vim.api.nvim_win_set_cursor,0,{$first,0}) vim.cmd('normal! zz') local t={} for i=$first,math.min($last,$first+7) do t[#t+1]=i end local id=vim.fn.matchaddpos('DiffAdd',t) vim.defer_fn(function() pcall(vim.fn.matchdelete,id) end,2500) end<CR>" ;; esac
+  fi
   nvim_state && nvim_rpc 2 --remote-send "<cmd>checktime<CR>$jump" >/dev/null 2>&1
   return 0
 }
