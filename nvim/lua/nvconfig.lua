@@ -2,14 +2,14 @@
 -- The theme name comes from the `theme` variable at the top of lua/plugins.lua.
 return {
   base46 = {
-    theme = vim.g.base46_theme or 'dark_horizon',
+    theme = vim.g.base46_theme or 'ayu_dark',
     transparency = false,
     hl_add = {},
     hl_override = {},
     changed_themes = {},
     integrations = {},
     integrations_dir = nil,
-    theme_toggle = { 'dark_horizon', 'ayu_dark' },
+    theme_toggle = { 'ayu_dark', 'dark_horizon' },
     -- base46 compiles one highlight file per integration; skip the NvChad UI pieces we do not run.
     excluded = { 'blankline', 'cmp', 'nvcheatsheet', 'nvimtree', 'statusline', 'tbline', 'whichkey' },
   },

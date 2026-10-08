@@ -1,5 +1,5 @@
 -- Plugin specs for lazy.nvim.
-local theme = 'dark_horizon' -- any NvChad base46 theme name, e.g. 'ayu_dark' (https://nvchad.com/themes)
+local theme = 'ayu_dark' -- any NvChad base46 theme name, e.g. 'dark_horizon' (https://nvchad.com/themes)
 local ts_langs = { 'typescript', 'tsx', 'javascript', 'lua', 'bash', 'json', 'markdown', 'markdown_inline' }
 local ts_filetypes = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact', 'lua', 'sh', 'bash', 'json', 'markdown' }
 
