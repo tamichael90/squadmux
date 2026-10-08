@@ -183,9 +183,9 @@ The sidebar row `+ add agent` (click or `Enter`) opens a popup form that starts 
    `agentnav/roles/*.md`, written as short briefs (scope, working agreement, how to report back to
    the lead, whose agentnav label is filled in). The chosen brief opens in `$EDITOR` (nvim, else vi)
    for you to adjust; it is kept at `$STATE/roles/<name>.md`.
-3. **Working dirs**: a colon-separated line (paths may contain spaces), defaulting to the lead pane's
-   directory plus every context root; the first is the new pane's working directory, the rest become
-   `--add-dir`.
+3. **Working dirs**: a colon-separated line (paths may contain spaces, but not a colon; start such an
+   agent by hand), defaulting to the lead pane's directory plus every context root; the first is the new
+   pane's working directory, the rest become `--add-dir`.
 4. **Permissions**: "same as lead" (detected from the lead's `claude` process: `--dangerously-skip-permissions`
    or `--permission-mode …`; messages between sessions in different modes get held for approval) or
    "default".

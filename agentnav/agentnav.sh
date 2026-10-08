@@ -285,8 +285,10 @@ PY
   printf '%s\n' "$dirs" | tr ':' '\n' | nl -w3 -s'. '
   read -r -e -p 'Edit (colon-separated), Enter keeps: ' -i "$dirs" dirs || exit 0
   IFS=: read -r -a dirs_a <<<"$dirs"
-  cwd="${dirs_a[0]:-$HOME}"
-  extra=("${dirs_a[@]:1}")
+  extra=()
+  for dir in "${dirs_a[@]}"; do [ -n "$dir" ] && extra+=("$dir"); done # "a::b" or a trailing colon
+  cwd="${extra[0]:-$HOME}"
+  extra=("${extra[@]:1}")
   mflags="$(lead_mode)"
   choice="$(pick 'Permissions> ' "same as lead (${mflags:-no flag})" 'default (no flag)')"
   case "$choice" in same*) ;; default*) mflags="" ;; *) exit 0 ;; esac
