@@ -30,8 +30,10 @@ telescope, completion) so hand edits feel like an IDE.
   it installs to `~/.config/agentnav` and keeps that name
 - `nvim/` — a ~180-line Lua Neovim config: lazy.nvim, vtsls / lua_ls / bashls via mason, treesitter,
   telescope, gitsigns, blink.cmp, format on save, One Dark Pro vivid theme with italic comments, keywords
-  and functions via olimorris/onedarkpro.nvim. The variant is the `local theme = 'onedark_vivid'` line at
-  the top of `nvim/lua/plugins.lua` (`onedark`, `onedark_dark`, `onelight` or `vaporwave`)
+  and functions via olimorris/onedarkpro.nvim, on a slightly darker background. The variant and the
+  background are the `local theme = 'onedark_vivid'` and `local bg = '#21252b'` lines at the top of
+  `nvim/lua/plugins.lua` (variants: `onedark`, `onedark_dark`, `onelight`, `vaporwave`; cursorline, floats
+  and the statusline derive from `bg`)
 - `install.sh` — installs Neovim, ripgrep, fd, fzf and the tree-sitter CLI into `~/.local` (no sudo),
   links the configs, and wires tmux, bash and the Claude Code hooks
 

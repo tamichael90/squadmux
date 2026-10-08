@@ -1,5 +1,6 @@
 -- Plugin specs for lazy.nvim.
 local theme = 'onedark_vivid' -- onedarkpro variants: onedark, onedark_vivid, onedark_dark, onelight, vaporwave
+local bg = '#21252b' -- editor background; the theme's own is #282c34. Cursorline, floats and statusline follow it.
 local ts_langs = { 'typescript', 'tsx', 'javascript', 'lua', 'bash', 'json', 'markdown', 'markdown_inline' }
 local ts_filetypes = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact', 'lua', 'sh', 'bash', 'json', 'markdown' }
 
@@ -12,6 +13,7 @@ return {
     config = function()
       local ok = pcall(function()
         require('onedarkpro').setup({
+          colors = { [theme] = { bg = bg, black = bg } },
           styles = { comments = 'italic', keywords = 'italic', functions = 'italic' },
           options = { cursorline = true },
         })
