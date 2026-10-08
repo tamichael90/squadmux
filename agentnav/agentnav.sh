@@ -390,7 +390,7 @@ follow_file() {
 
 # sidebar_key <key> <cursor-pane> <pane-id>... : move the cursor (clamped) or show the agent under it.
 sidebar_key() {
-  local key="$1" cur="$2" i=-1 j ids
+  local key="$1" cur="$2" i=-1 j ids n
   shift 2
   ids=("$@")
   for j in "${!ids[@]}"; do
@@ -399,11 +399,12 @@ sidebar_key() {
   case "$key" in
   up)
     i=$((i <= 0 ? 0 : i - 1))
-    [ "${ids[i]}" = - ] && i=$((i - 1)) # hop over the spacer
+    while [ "$i" -gt 0 ] && [ "${ids[i]}" = - ]; do i=$((i - 1)); done # hop over the spacers
     ;;
   down)
-    i=$((i < 0 ? 0 : (i >= ${#ids[@]} - 1 ? ${#ids[@]} - 1 : i + 1)))
-    [ "${ids[i]}" = - ] && i=$((i + 1))
+    n=${#ids[@]}
+    i=$((i < 0 ? 0 : (i >= n - 1 ? n - 1 : i + 1)))
+    while [ "$i" -lt $((n - 1)) ] && [ "${ids[i]}" = - ]; do i=$((i + 1)); done
     ;;
   enter)
     [ "$i" -ge 0 ] || return
@@ -448,7 +449,7 @@ kill_aux() {
 }
 
 sidebar() {
-  local main cursor id ids label dot mark out count had_team=0
+  local main cursor id ids label dot mark out count had_team=0 height spacers j
   tmux set -p -t "$TMUX_PANE" @agentnav_role sidebar
   panel_tty
   while :; do
@@ -456,7 +457,14 @@ sidebar() {
     main="$(opt @agentnav_main)"
     mapfile -t ids < <(agent_panes)
     count=${#ids[@]}
-    ids+=(add - follow) # "+ add agent", a blank spacer ("-", never selectable) and the follow toggle
+    # "+ add agent" sits under the agents; the follow toggle is pinned to the pane's last line, with
+    # unselectable spacer rows ("-") in between (one spacer when the list already reaches the bottom).
+    height="$(tmux display -p -t "$TMUX_PANE" '#{pane_height}')"
+    spacers=$((height - HEADER - count - 2))
+    [ "$spacers" -ge 1 ] || spacers=1
+    ids+=(add)
+    for ((j = 0; j < spacers; j++)); do ids+=(-); done
+    ids+=(follow)
     # The cursor follows a pane id so new agents don't shift it; it rests on the main agent until moved.
     cursor="$(cat "$STATE/cursor" 2>/dev/null)"
     [[ " ${ids[*]} " == *" $cursor "* ]] || cursor="$main"
@@ -498,6 +506,7 @@ sidebar() {
       exit 0
     fi
     setopt @agentnav_rows "${ids[*]} "
+    out="${out%\\n}" # no newline after the last line, or the pane would scroll
     printf '%b\033[J' "$out"
     read_key && sidebar_key "$REPLY" "$cursor" "${ids[@]}"
   done
