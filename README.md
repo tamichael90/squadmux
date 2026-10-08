@@ -208,7 +208,9 @@ marker in the context tree (the agent's name is added once the panel is wider th
 The sidebar's last row, `○ follow off` / `◉ follow on`, toggles follow mode (click or `Enter`; the
 setting survives a restart). With follow on, each edit also expands the tree down to the file, puts the
 cursor on it and shows it in the shared Neovim viewer, reloading the buffer with `:checktime` so the
-change appears at once. Two rules keep this from getting in the way:
+change appears at once. The viewer's cursor jumps to the first changed line (taken from the hook's
+diff), centred, and the changed lines flash for a moment so you can follow the agent. Two rules keep
+this from getting in the way:
 
 - The viewer is swapped into the main slot on every edit; turn follow off while you want to type
   undisturbed.

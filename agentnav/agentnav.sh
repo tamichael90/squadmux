@@ -337,12 +337,34 @@ follow_on() { [ "$(cat "$STATE/follow" 2>/dev/null)" = on ]; }
 follow_set() { printf '%s' "$1" >"$STATE/follow"; }
 follow_toggle() { if follow_on; then follow_set off; else follow_set on; fi; }
 
-# touched <pane> [file]: record an edit (file from the argument or the hook JSON on stdin).
+# touched <pane> [file]: record an edit (file from the argument or the hook JSON on stdin). The hook
+# JSON also carries the diff (tool_response.structuredPatch), from which the first and last changed
+# line are taken so the viewer can jump there.
 touched() {
-  local pane="$1" file="${2:-}"
-  [ -n "$file" ] || file="$(python3 -c 'import json, sys
-d = json.load(sys.stdin).get("tool_input", {})
-print(d.get("file_path") or d.get("notebook_path") or "")' 2>/dev/null)"
+  local pane="$1" file="${2:-}" first=0 last=0
+  if [ -z "$file" ]; then
+    # The JSON is kept (one file, overwritten) so the payload shape can be inspected.
+    read -r file first last < <(tee "$STATE/last-hook.json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+t = d.get("tool_input", {})
+path = t.get("file_path") or t.get("notebook_path") or ""
+first = last = 0
+resp = d.get("tool_response")
+for hunk in (resp.get("structuredPatch") or []) if isinstance(resp, dict) else []:
+    n = hunk.get("newStart", 1) - 1
+    for line in hunk.get("lines", []):
+        if line.startswith("-"):
+            continue
+        n += 1
+        if line.startswith("+"):
+            first = first or n
+            last = n
+    if not first:  # a pure deletion: point at where it was
+        first = last = hunk.get("newStart", 1)
+    break
+print(path.replace("\t", " "), first, last)' 2>/dev/null)
+  fi
   [ -n "$file" ] || return 0
   file="$(realpath_f "$file")"
   [ -f "$file" ] || return 0
@@ -352,7 +374,7 @@ print(d.get("file_path") or d.get("notebook_path") or "")' 2>/dev/null)"
     printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$pane" "$(pane_label "$pane")" "$file" >>"$STATE/touched"
     tail -n 200 "$STATE/touched" >"$STATE/touched.tmp" && mv "$STATE/touched.tmp" "$STATE/touched"
   )
-  follow_on && follow_file "$file" "$pane"
+  follow_on && follow_file "$file" "$pane" "$first" "$last"
   return 0
 }
 
@@ -361,7 +383,7 @@ print(d.get("file_path") or d.get("notebook_path") or "")' 2>/dev/null)"
 # message, when it is blocked on a prompt or when its current buffer or the target file's buffer is
 # modified (switching to a modified hidden buffer would park nvim on a W12 prompt).
 follow_file() {
-  local file="$1" pane="$2" label viewer fq
+  local file="$1" pane="$2" first="${3:-0}" last="${4:-0}" label viewer fq jump
   ctx_reveal "$file"
   label="$(pane_label "$pane")"
   viewer="$(opt @agentnav_viewer)"
@@ -379,7 +401,11 @@ follow_file() {
     esac
   fi
   open_file "$file" 0
-  nvim_state && nvim_rpc 2 --remote-send '<cmd>checktime<CR>' >/dev/null 2>&1 # reload a buffer edited on disk
+  # Reload the buffer edited on disk, then put the cursor on the first changed line, centred, with the
+  # changed lines (up to 8) flashed in DiffAdd for a moment so the eye follows the agent.
+  jump=""
+  [ "$first" -gt 0 ] 2>/dev/null && jump="<cmd>lua pcall(vim.api.nvim_win_set_cursor,0,{$first,0}) vim.cmd('normal! zz') local t={} for i=$first,math.min($last,$first+7) do t[#t+1]=i end local id=vim.fn.matchaddpos('DiffAdd',t) vim.defer_fn(function() pcall(vim.fn.matchdelete,id) end,2500)<CR>"
+  nvim_state && nvim_rpc 2 --remote-send "<cmd>checktime<CR>$jump" >/dev/null 2>&1
   return 0
 }
 
