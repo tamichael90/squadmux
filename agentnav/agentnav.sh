@@ -33,6 +33,7 @@ version_ge() { # version_ge 3.6 3.3: major.minor comparison without sort -V
 SELF="$(realpath_f "$0")"
 WIDTH=24 # default column width; the width in use is remembered in $STATE/width (see saved_width)
 MIN_WIDTH=12
+MIN_MAIN=20 # columns the main slot must keep when the saved width is clamped to the window
 HEADER=2 # sidebar lines above the first agent row
 CTX_HEADER=3 # context lines above the first tree row: title, "search files", "add folder"
 TEAMS_DIR="$HOME/.claude/teams"
@@ -174,11 +175,24 @@ saved_width() {
   printf '%s' "$w"
 }
 
+# column_width <pane in the home window>: saved_width clamped so the main slot keeps MIN_MAIN columns
+# (a width saved on a wide screen must not break a split on a narrow one). fix_layout stores the
+# clamped value on its next tick.
+column_width() {
+  local w ww
+  w="$(saved_width)"
+  ww="$(tmux display -p -t "$1" '#{window_width}' 2>/dev/null)"
+  [ -n "$ww" ] && [ "$w" -gt $((ww - MIN_MAIN)) ] && w=$((ww - MIN_MAIN))
+  [ "$w" -ge "$MIN_WIDTH" ] || w=$MIN_WIDTH
+  printf '%s' "$w"
+}
+
 # Keep the home window as [sidebar/context | main]; fall back to the lead if the main pane died. The
-# column width is the user's: a resize (mouse drag or resize-pane) is remembered, the stored width is
-# only re-applied after a join-pane repair or when the column fell below MIN_WIDTH.
+# column width is the user's: a resize (mouse drag or resize-pane) is remembered. The stored width is
+# re-applied (clamped to the window) after a join-pane repair and whenever the window itself changed
+# size, so a small window never overwrites the preference; below MIN_WIDTH the column snaps to 12.
 fix_layout() {
-  local side main lead live
+  local side main lead live ww
   side="$(opt @agentnav_sidebar)"
   main="$(opt @agentnav_main)"
   alive "$side" || return
@@ -187,14 +201,17 @@ fix_layout() {
     [ -n "$lead" ] || return
     tmux join-pane -hf -s "$lead" -t "$side" 2>>"$STATE/log" || return
     setopt @agentnav_main "$lead"
-    tmux resize-pane -t "$side" -x "$(saved_width)"
+    tmux resize-pane -t "$side" -x "$(column_width "$side")"
   fi
-  live="$(tmux display -p -t "$side" '#{pane_width}')"
-  if [ "$live" -lt "$MIN_WIDTH" ]; then
+  read -r live ww < <(tmux display -p -t "$side" '#{pane_width} #{window_width}')
+  if [ "$ww" != "$(cat "$STATE/winw" 2>/dev/null)" ]; then
+    printf '%s' "$ww" >"$STATE/winw" # the window changed, not the user: restore the preference
+    tmux resize-pane -t "$side" -x "$(column_width "$side")"
+  elif [ "$live" -lt "$MIN_WIDTH" ]; then
     printf '%s' "$MIN_WIDTH" >"$STATE/width"
     tmux resize-pane -t "$side" -x "$MIN_WIDTH"
-  elif [ "$live" != "$(saved_width)" ]; then
-    printf '%s' "$live" >"$STATE/width"
+  elif [ "$live" != "$(column_width "$side")" ]; then
+    printf '%s' "$live" >"$STATE/width" # a user resize
   fi
 }
 
@@ -208,7 +225,7 @@ show() {
     else
       # The main pane just died (e.g. the viewer was quit); refill the slot instead of swapping.
       side="$(opt @agentnav_sidebar)"
-      alive "$side" && tmux join-pane -hf -s "$target" -t "$side" && tmux resize-pane -t "$side" -x "$(saved_width)"
+      alive "$side" && tmux join-pane -hf -s "$target" -t "$side" && tmux resize-pane -t "$side" -x "$(column_width "$side")"
     fi
     setopt @agentnav_main "$target"
   fi
@@ -1169,14 +1186,20 @@ ctx_click() {
 # ---- lifecycle -----------------------------------------------------------
 
 start() {
-  local lead="$1" side ctx
+  local lead="$1" side ctx w
   if alive "$(opt @agentnav_sidebar)"; then
     echo "agentnav already running"
     return
   fi
   tmux set -p -t "$lead" @agentnav_role lead
   setopt @agentnav_main "$lead"
-  side="$(tmux split-window -hbd -l "$(saved_width)" -t "$lead" -P -F '#{pane_id}' "$SELF sidebar")"
+  # Split at the saved width clamped to this window; fall back to the default, then the minimum.
+  for w in "$(column_width "$lead")" "$WIDTH" "$MIN_WIDTH"; do
+    side="$(tmux split-window -hbd -l "$w" -t "$lead" -P -F '#{pane_id}' "$SELF sidebar" 2>/dev/null)"
+    [ -n "$side" ] && break
+  done
+  [ -n "$side" ] || { echo "agentnav: cannot split the lead pane (window too narrow?)" >&2; return 1; }
+  tmux display -p -t "$side" '#{window_width}' >"$STATE/winw"
   tmux set -p -t "$side" @agentnav_role sidebar
   setopt @agentnav_sidebar "$side"
   # The after-split-window hook runs adopt() concurrently; hold its lock so the context
