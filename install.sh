@@ -326,7 +326,13 @@ for event, entries in wanted.items():
     existing = hooks.setdefault(event, [])
     for entry in entries:
         command = entry["hooks"][0]["command"]
-        state = ours.search(command).group(1)
+        m = ours.search(command)
+        if not m:  # not a state hook (e.g. `touched`): add once, matched by exact command
+            if not any(h.get("command") == command for e in existing for h in e.get("hooks", [])):
+                existing.append(entry)
+                added += 1
+            continue
+        state = m.group(1)
         mine = [h for e in existing for h in e.get("hooks", [])
                 if (m := ours.search(h.get("command", ""))) and m.group(1) == state]
         if not mine:

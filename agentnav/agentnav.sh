@@ -8,6 +8,7 @@
 #        | state <working|waiting|idle> | ctxclick <row> <pane> <client> | ctxadd <dir> [pane] | ctxrm <dir> [pane]
 #        | ctxscroll <+n|-n> <pane> | ctxpick <pane> | ctxsearch <pane> | ctxopen <path> <pane>
 #        | ctxactivate <row> <client> <pane> | pickbase <pane> <action> [arg] | open <file> [pane]
+#        | touched [file] [pane] (hook: reads the tool JSON on stdin) | follow [on|off|toggle] [pane]
 # The click bindings and auto-start hook live in agentnav.tmux. Both panels also take Up/Down/Enter
 # (and Left/Right in CONTEXT) when focused; the pane process reads the keys itself.
 set -u
@@ -204,7 +205,60 @@ click() {
   read -r -a ids <<<"$(opt @agentnav_rows)"
   [ "$row" -ge 0 ] && [ "$row" -lt "${#ids[@]}" ] || return
   printf '%s' "${ids[$row]}" >"$STATE/cursor"
-  show "${ids[$row]}"
+  if [ "${ids[$row]}" = follow ]; then follow_toggle; else show "${ids[$row]}"; fi
+}
+
+# ---- follow mode -----------------------------------------------------------
+# Agents' edits arrive through a Claude Code PostToolUse hook as `touched`; recent ones get a marker in
+# the tree, and with follow on the file is revealed and opened in the viewer (see follow_file).
+
+follow_on() { [ "$(cat "$STATE/follow" 2>/dev/null)" = on ]; }
+follow_set() { printf '%s' "$1" >"$STATE/follow"; }
+follow_toggle() { if follow_on; then follow_set off; else follow_set on; fi; }
+
+# touched <pane> [file]: record an edit (file from the argument or the hook JSON on stdin).
+touched() {
+  local pane="$1" file="${2:-}"
+  [ -n "$file" ] || file="$(python3 -c 'import json, sys
+d = json.load(sys.stdin).get("tool_input", {})
+print(d.get("file_path") or d.get("notebook_path") or "")' 2>/dev/null)"
+  [ -n "$file" ] || return 0
+  file="$(realpath_f "$file")"
+  [ -f "$file" ] || return 0
+  printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$pane" "$(pane_label "$pane")" "$file" >>"$STATE/touched"
+  tail -n 200 "$STATE/touched" >"$STATE/touched.tmp" && mv "$STATE/touched.tmp" "$STATE/touched"
+  follow_on && follow_file "$file" "$pane"
+  return 0
+}
+
+# follow_file <file> <pane>: reveal the file in the tree and show it in the viewer. The viewer is swapped
+# into the main slot and focused only when the active pane is the viewer or a panel; while the user is in
+# an agent pane the viewer is updated in place (it may be parked) and a message says what happened. A
+# viewer whose current buffer is modified is left alone apart from the message.
+follow_file() {
+  local file="$1" pane="$2" label active role viewer quiet=1
+  ctx_reveal "$file"
+  label="$(pane_label "$pane")"
+  viewer="$(opt @agentnav_viewer)"
+  if alive "$viewer"; then
+    nvim_state
+    case $? in
+    124) return 0 ;; # blocked on a prompt: never poke it
+    0)
+      if [ "$(nvim_rpc 2 --remote-expr '&modified' 2>/dev/null)" = 1 ]; then
+        tmux display-message "follow: $(basename "$file") edited by $label, viewer has unsaved changes"
+        return 0
+      fi
+      ;;
+    esac
+  fi
+  active="$(tmux display -p -t "$T" '#{pane_id}')"
+  role="$(popt "$active" @agentnav_role)"
+  case "$role" in viewer | sidebar | context) quiet=0 ;; esac
+  open_file "$file" "$quiet"
+  [ "$quiet" = 1 ] && tmux display-message "follow: $(basename "$file") edited by $label"
+  nvim_state && nvim_rpc 2 --remote-send '<cmd>checktime<CR>' >/dev/null 2>&1 # reload a buffer edited on disk
+  return 0
 }
 
 # sidebar_key <key> <cursor-pane> <pane-id>... : move the cursor (clamped) or show the agent under it.
@@ -218,7 +272,11 @@ sidebar_key() {
   case "$key" in
   up) i=$((i <= 0 ? 0 : i - 1)) ;;
   down) i=$((i < 0 ? 0 : (i >= ${#ids[@]} - 1 ? ${#ids[@]} - 1 : i + 1))) ;;
-  enter) [ "$i" -ge 0 ] && show "${ids[i]}"; return ;;
+  enter)
+    [ "$i" -ge 0 ] || return
+    if [ "${ids[i]}" = follow ]; then follow_toggle; else show "${ids[i]}"; fi
+    return
+    ;;
   *) return ;;
   esac
   [ "$i" -ge 0 ] && printf '%s' "${ids[i]}" >"$STATE/cursor"
@@ -229,12 +287,13 @@ clear_state() {
   setopt -u @agentnav_context
   setopt -u @agentnav_rows
   setopt -u @agentnav_main
+  # The follow setting survives a restart; the touched log does not (its markers expire anyway).
   if alive "$(opt @agentnav_viewer)"; then
     # A viewer that stays (stop, or a refused :qa) keeps its pane id and socket so the next start reuses it.
-    find "$STATE" -mindepth 1 ! -name 'nvim-*.sock' -delete
+    find "$STATE" -mindepth 1 ! -name 'nvim-*.sock' ! -name follow -delete
   else
     setopt -u @agentnav_viewer
-    rm -rf "$STATE"
+    find "$STATE" -mindepth 1 ! -name follow -delete
     [ "$SOCKDIR" = "$STATE" ] || rm -rf "$SOCKDIR"
   fi
 }
@@ -260,11 +319,17 @@ sidebar() {
     main="$(opt @agentnav_main)"
     mapfile -t ids < <(agent_panes)
     count=${#ids[@]}
+    ids+=(follow) # the "follow" toggle row sits under the agents and takes the cursor like a row
     # The cursor follows a pane id so new agents don't shift it; it rests on the main agent until moved.
     cursor="$(cat "$STATE/cursor" 2>/dev/null)"
     [[ " ${ids[*]} " == *" $cursor "* ]] || cursor="$main"
     out="\033[H\033[1m AGENTS\033[0m\033[K\n\033[K\n"
     for id in "${ids[@]}"; do
+      if [ "$id" = follow ]; then
+        if follow_on; then label="◉ follow on"; else label="○ follow off"; fi
+        if [ "$cursor" = follow ]; then out+="\033[7m   ${label}\033[K\033[0m\n"; else out+="\033[2m   ${label}\033[K\033[0m\n"; fi
+        continue
+      fi
       label="$(pane_label "$id")"
       label="${label:0:$((WIDTH - 6))}"
       # @agentnav_state is set per pane by the Claude Code hooks in ~/.claude/settings.json.
@@ -309,7 +374,7 @@ ctx_render() {
   local height="$1" selected
   selected="$(opt @agentnav_ctx_file)"
   python3 - "$STATE" "$WIDTH" "$height" "$CTX_HEADER" "$selected" <<'PY'
-import os, sys
+import os, sys, time
 state, width, height, header, selected = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 SKIP = {".git", "node_modules"}
 
@@ -320,6 +385,12 @@ def read(name):
         return []
 
 roots, opened = read("roots"), set(read("open"))
+# Files agents edited in the last 10 minutes: path -> agent label (latest wins).
+touched, cutoff = {}, time.time() - 600
+for line in read("touched"):
+    parts = line.split("\t")
+    if len(parts) == 4 and parts[0].isdigit() and int(parts[0]) >= cutoff:
+        touched[parts[3]] = parts[2]
 def read_int(name, default=0):
     try:
         return int((read(name) or [default])[0])
@@ -386,6 +457,10 @@ def fixed(label, active):
 out = ["\033[H\033[1m CONTEXT\033[0m\033[K", fixed("  ⌕ search files", cursor == 0), fixed("  + add folder", cursor == 1)]
 for i, (kind, path, depth, label) in enumerate(rows[scroll:scroll + visible], scroll):
     text = (" " * (1 + 2 * depth) + label)[:width]
+    if kind == "F" and path in touched:
+        # Recently edited: a dot at the right edge, plus the agent's name when the panel is wide enough.
+        tag = (" " + touched[path] if width >= 40 else "") + " \033[33m●\033[39m"
+        text = text[:width - len(tag) + 10].ljust(width - len(tag) + 10) + tag
     if i == cursor - 2:
         out.append("\033[7m" + text + "\033[K\033[0m")
     elif kind == "F" and path == selected:
@@ -560,8 +635,9 @@ label_viewer() {
   tmux select-pane -t "$1" -T "$(basename "$2")"
 }
 
+# open_file <file> [quiet]: open in the viewer; with quiet=1 the viewer is not swapped in or focused.
 open_file() {
-  local file="$1" old new cwd state sock
+  local file="$1" quiet="${2:-0}" old new cwd state sock
   file="$(realpath_f "$file")"
   [ -f "$file" ] || return
   old="$(opt @agentnav_viewer)"
@@ -571,7 +647,7 @@ open_file() {
     state=$?
     if [ "$state" != 1 ]; then
       # Show first: if nvim is blocked on a prompt the user needs to see it, not a second instance.
-      show "$old"
+      [ "$quiet" = 1 ] || show "$old"
       if [ "$state" = 0 ] && nvim_rpc 2 --remote "$file" >/dev/null 2>&1; then
         label_viewer "$old" "$file"
       else
@@ -588,7 +664,7 @@ open_file() {
   tmux set -p -t "$new" @agentnav_sock "$sock"
   label_viewer "$new" "$file"
   setopt @agentnav_viewer "$new"
-  show "$new"
+  [ "$quiet" = 1 ] || show "$new"
   alive "$old" && tmux kill-pane -t "$old"
 }
 
@@ -908,6 +984,11 @@ ctxpick) use_session_of "${2:?pane}" && ctx_pick ;;
 pickbase) use_session_of "$(pane_arg "${2:?pane}")" && pick_base "${3:?action}" "${4:-}" ;;
 ctxsearch) use_session_of "${2:?pane}" && ctx_search ;;
 ctxactivate) use_session_of "${4:?pane}" && ctx_activate "${2:?row}" "${3:?client}" || true ;;
+touched) [ -n "${3:-${TMUX_PANE:-}}" ] && use_session_of "${3:-$TMUX_PANE}" && touched "${3:-$TMUX_PANE}" "${2:-}" || true ;;
+follow)
+  use_session_of "${3:-${TMUX_PANE:?}}" || exit 1
+  case "${2:-toggle}" in on | off) follow_set "$2" ;; *) follow_toggle ;; esac
+  ;;
 ctxopen) use_session_of "$(pane_arg "${3:?pane}")" && ctx_open_path "${2:?path}" ;;
 ctxrm) use_session_of "${3:-${TMUX_PANE:?}}" && ctx_rm "${2:?dir}" ;;
 ctxscroll) use_session_of "${3:?pane}" && ctx_scroll "${2:?delta}" ;;

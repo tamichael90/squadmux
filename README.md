@@ -174,6 +174,25 @@ What the layer displaces: `Ctrl-S` was Neovim's insert-mode signature help, whic
 `:suspend`). Ctrl-S works because Neovim turns off terminal flow control for its own screen; in a plain
 shell it still freezes output unless you run `stty -ixon`.
 
+## Follow mode
+
+Agents' edits reach agentnav through a Claude Code `PostToolUse` hook on `Edit|Write|MultiEdit|NotebookEdit`
+(`agentnav.sh touched`, in `claude/hooks.json`). Every file edited in the last ten minutes gets a ●
+marker in the context tree (the agent's name is added once the panel is wider than 40 columns).
+
+The sidebar's last row, `○ follow off` / `◉ follow on`, toggles follow mode (click or `Enter`; the
+setting survives a restart). With follow on, each edit also expands the tree down to the file, puts the
+cursor on it and shows it in the shared Neovim viewer, reloading the buffer with `:checktime` so the
+change appears at once. Two rules keep this from getting in the way:
+
+- The viewer is swapped into the main slot and focused only when the active pane is the viewer or one
+  of the panels. While you are typing in an agent pane the viewer is updated in place (it may be
+  parked) and a one-line tmux message names the file and the agent instead.
+- A viewer whose current buffer has unsaved changes is never touched: the file is only marked and
+  revealed, and the message says so.
+
+With several agents the viewer follows the most recent edit; the markers show all of them.
+
 ## Uninstall
 
 ```sh
