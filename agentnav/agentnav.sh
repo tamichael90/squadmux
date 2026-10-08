@@ -550,7 +550,7 @@ ctx_render() {
   local height="$1" selected
   selected="$(opt @agentnav_ctx_file)"
   python3 - "$STATE" "$WIDTH" "$height" "$CTX_HEADER" "$selected" <<'PY'
-import os, sys, time
+import json, os, subprocess, sys, time
 state, width, height, header, selected = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 SKIP = {".git", "node_modules"}
 
@@ -567,6 +567,76 @@ for line in read("touched"):
     parts = line.split("\t")
     if len(parts) == 4 and parts[0].isdigit() and int(parts[0]) >= cutoff:
         touched[parts[3]] = parts[2]
+
+# Git status per file (absolute path -> XY), one `git status` per work tree, refreshed at most every
+# 2 s through $STATE/gitstatus.json. Directories inherit the strongest status beneath them.
+CONFLICTS = {"UU", "AA", "DD", "AU", "UA", "DU", "UD"}
+def rank(xy):  # conflict > deleted > both > unstaged > staged > untracked
+    if xy in CONFLICTS:
+        return 6
+    if "D" in xy:
+        return 5
+    if xy == "??":
+        return 1
+    x, y = xy[0] != " ", xy[1] != " "
+    return 4 if x and y else 3 if y else 2 if x else 0
+COLOR = {6: "\033[1;31m", 5: "\033[31m", 4: "\033[1;33m", 3: "\033[33m", 2: "\033[32m", 1: "\033[2;32m"}
+
+def git(args, cwd, timeout):
+    return subprocess.run(["git", "-C", cwd] + args, capture_output=True, timeout=timeout)
+
+def git_status(roots):
+    cache = os.path.join(state, "gitstatus.json")
+    try:
+        c = json.load(open(cache))
+        if c.get("roots") == roots and time.time() - c.get("t", 0) < 2:
+            return c["files"], c["tops"]
+    except (OSError, ValueError, KeyError):
+        c = {}
+    tops = c.get("tops") if c.get("roots") == roots else None
+    if tops is None:
+        tops = {}
+        for r in roots:
+            try:
+                p = git(["rev-parse", "--show-toplevel"], r, 2)
+                tops[r] = p.stdout.decode().strip() if p.returncode == 0 else ""
+            except (OSError, subprocess.TimeoutExpired):
+                tops[r] = ""
+    files = {}
+    for top in sorted({t for t in tops.values() if t}):
+        try:
+            out = git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], top, 5).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        fields = out.split(b"\0")
+        i = 0
+        while i < len(fields):
+            entry = fields[i]
+            i += 1
+            if len(entry) < 4:
+                continue
+            xy = entry[:2].decode("ascii", "replace")
+            files[os.path.join(top, entry[3:].decode("utf-8", "replace"))] = xy
+            if "R" in xy or "C" in xy:  # rename/copy: the old path follows as its own field
+                i += 1
+    try:
+        with open(cache, "w") as f:
+            json.dump({"t": time.time(), "roots": roots, "tops": tops, "files": files}, f)
+    except OSError:
+        pass
+    return files, tops
+
+gitfiles, _ = git_status(roots)
+status_rank = {}
+for p, xy in gitfiles.items():
+    r = rank(xy)
+    status_rank[p] = max(status_rank.get(p, 0), r)
+    d = os.path.dirname(p)
+    while d and d != "/":  # roll up to every ancestor so a collapsed dir shows the strongest status
+        if status_rank.get(d, 0) >= r:
+            break
+        status_rank[d] = r
+        d = os.path.dirname(d)
 def read_int(name, default=0):
     try:
         return int((read(name) or [default])[0])
@@ -632,11 +702,17 @@ def fixed(label, active):
     return ("\033[7m" if active else "\033[2m") + label + "\033[K\033[0m"
 out = ["\033[H\033[1m CONTEXT\033[0m\033[K", fixed("  ⌕ search files", cursor == 0), fixed("  + add folder", cursor == 1)]
 for i, (kind, path, depth, label) in enumerate(rows[scroll:scroll + visible], scroll):
-    text = (" " * (1 + 2 * depth) + label)[:width]
-    if kind == "F" and path in touched:
-        # Recently edited: a dot at the right edge, plus the agent's name when the panel is wide enough.
-        tag = (" " + touched[path] if width >= 40 else "") + " \033[33m●\033[39m"
-        text = text[:width - len(tag) + 10].ljust(width - len(tag) + 10) + tag
+    indent = " " * (1 + 2 * depth)
+    # Recently edited: a dot at the right edge, plus the agent's name when the panel is wide enough.
+    tag_text = ((" " + touched[path] if width >= 40 else "") + " ●") if kind == "F" and path in touched else ""
+    avail = width - len(tag_text)
+    lab = label[:max(avail - len(indent), 0)]
+    color = COLOR.get(status_rank.get(path, 0))
+    # Colour the label only; reset colour and intensity with 39/22 so a reverse-video cursor row survives.
+    body = indent + (color + lab + ("\033[39m\033[1m" if kind == "D" else "\033[22;39m") if color else lab)
+    text = body
+    if tag_text:
+        text += " " * max(avail - len(indent) - len(lab), 0) + tag_text[:-1] + "\033[33m●\033[39m"
     if i == cursor - 2:
         out.append("\033[7m" + text + "\033[K\033[0m")
     elif kind == "F" and path == selected:

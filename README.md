@@ -120,6 +120,11 @@ Panels take keys when they are the active tmux pane (click a panel's title, or `
 | mouse wheel            | scroll                                                  |
 | click                  | same as `Enter` on that row; also focuses the panel     |
 
+Files and directories are coloured by git status: green = staged, yellow = unstaged, bright yellow =
+staged and unstaged, dim green = untracked, red = deleted, bold red = conflict; a directory shows the
+strongest status beneath it, so a collapsed tree still points at the changes. Roots outside a repository
+stay plain. Status is read with one `git status` per work tree, at most every two seconds.
+
 "⌕ search files" lists every file under the current roots (prefixed with the root's name) in an fd + fzf
 picker with a preview; picking one expands the tree down to it, highlights it and opens it in the
 viewer. Without fd and fzf it falls back to a tmux "Open file:" prompt that takes a path relative to the
