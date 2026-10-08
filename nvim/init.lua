@@ -35,6 +35,7 @@ map('n', '<leader>w', '<cmd>write<CR>', { desc = 'Save' })
 map('n', '<leader>q', '<cmd>quit<CR>', { desc = 'Quit window' })
 map('n', '<leader>d', vim.diagnostic.open_float, { desc = 'Line diagnostics' })
 -- ]d / [d (next/prev diagnostic) and K (hover) are Neovim defaults.
+require('ide-keys') -- VS Code-style layer (Ctrl-S, Ctrl-P, F12, Alt-arrows, ...)
 
 -- LSP ----------------------------------------------------------------------
 vim.lsp.config('lua_ls', {

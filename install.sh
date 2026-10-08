@@ -267,11 +267,26 @@ link_dir() {
   changed "linked $(tilde "$link") -> $(tilde "$target")"
 }
 
-# append_block <file> <content>: append once, between marker comments.
+# append_block <file> <content>: append once, between marker comments; an existing block whose
+# content differs is replaced in place (backup first).
 append_block() {
-  local file="$1" content="$2"
+  local file="$1" content="$2" current
   if grep -qF "# >>> $MARK >>>" "$file" 2>/dev/null; then
-    log "$(tilde "$file") already has the $MARK block"
+    current="$(sed -n "/^# >>> $MARK >>>\$/,/^# <<< $MARK <<<\$/p" "$file" | sed '1d;$d')"
+    if [ "$current" = "$content" ]; then
+      log "$(tilde "$file") already has the $MARK block"
+      return
+    fi
+    if [ "$DRY" = 1 ]; then dry "refresh the $MARK block in $file"; return; fi
+    cp "$file" "$file.bak.$STAMP"
+    python3 - "$file" "$MARK" "$content" <<'PY'
+import re, sys
+path, mark, content = sys.argv[1:4]
+text = open(path).read()
+pattern = re.compile(rf"^# >>> {re.escape(mark)} >>>\n.*?^# <<< {re.escape(mark)} <<<\n", re.S | re.M)
+open(path, "w").write(pattern.sub(lambda m: f"# >>> {mark} >>>\n{content}\n# <<< {mark} <<<\n", text, count=1))
+PY
+    changed "refreshed the $MARK block in $(tilde "$file") (backup: .bak.$STAMP)"
     return
   fi
   if [ "$DRY" = 1 ]; then dry "append $MARK block to $file"; return; fi

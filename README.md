@@ -144,7 +144,26 @@ unsaved buffers survive. `agentnav.sh ctxadd <dir>` / `ctxrm <dir>` manage the t
 | `]h` `[h` `<leader>hp`  | next / previous git hunk, preview hunk             |
 | `<leader>hr` `hb`       | reset hunk, blame line                             |
 | `<leader>w` `q`         | write, quit window                                 |
-| `<C-y>` `<C-n>` `<C-p>` | accept / next / previous completion (blink.cmp)    |
+| `<CR>` `<Tab>` `<S-Tab>` | accept / next / previous completion (blink.cmp); `<C-y>` also accepts |
+
+| VS Code-style (on top of the Vim maps) |                                               |
+| ------------------------------------- | --------------------------------------------- |
+| `Ctrl-S`                              | save (normal, insert, visual)                 |
+| `Ctrl-P` / `Ctrl-Shift-P`             | find files / command palette                  |
+| `Ctrl-/`                              | toggle comment (line, or the selection)       |
+| `F2`                                  | rename symbol                                 |
+| `F12` / `Shift-F12` / `Ctrl-F12`      | definition / references / implementations     |
+| `F8` / `Shift-F8`                     | next / previous diagnostic                    |
+| `Ctrl-.`                              | code action                                   |
+| `Ctrl-Z` / `Ctrl-Shift-Z`             | undo / redo                                   |
+| `Alt-Up` / `Alt-Down`                 | move the line or selection                    |
+| `Ctrl-D`                              | add a cursor at the next match; `Esc` clears  |
+
+Terminal caveat: `Ctrl-Shift-P`, `Ctrl-.`, `Ctrl-/` and `Ctrl-Shift-Z` are only distinct keys when the
+terminal sends extended key codes (modifyOtherKeys or the kitty keyboard protocol; recent GNOME
+Terminal, Ptyxis and kitty do) and tmux passes them on, which the tmux snippet enables with
+`extended-keys on`. Without that they degrade to `Ctrl-P`, `.`, `Ctrl-_` (still bound to comment) and
+`Ctrl-Z`. Quit stays on `<leader>q`: `Ctrl-Q` is terminal flow control.
 
 ## Uninstall
 

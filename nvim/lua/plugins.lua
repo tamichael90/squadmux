@@ -26,6 +26,22 @@ return {
     end,
   },
 
+  -- Multiple cursors: Ctrl-D adds a cursor at the next match of the word / selection, Esc clears.
+  {
+    'jake-stewart/multicursor.nvim',
+    branch = '1.0',
+    config = function()
+      local mc = require('multicursor-nvim')
+      mc.setup()
+      vim.keymap.set({ 'n', 'x' }, '<C-d>', function() mc.matchAddCursor(1) end, { desc = 'Add cursor at next match' })
+      mc.addKeymapLayer(function(layerSet)
+        layerSet('n', '<Esc>', function()
+          if not mc.cursorsEnabled() then mc.enableCursors() else mc.clearCursors() end
+        end)
+      end)
+    end,
+  },
+
   -- Parsers and queries; highlighting itself is Neovim's (vim.treesitter.start).
   {
     'nvim-treesitter/nvim-treesitter',
@@ -85,13 +101,19 @@ return {
     },
   },
 
-  -- Completion. <C-y> accepts, <C-n>/<C-p> move, <C-space> opens docs (the 'default' preset).
+  -- Completion. Enter accepts, Tab/S-Tab cycle while the menu is open (else snippet jump / plain Tab),
+  -- <C-y> also accepts, <C-n>/<C-p> move, <C-space> opens docs, <C-e> closes.
   -- Loaded eagerly so its capabilities are registered before the first LSP client starts.
   {
     'saghen/blink.cmp',
     version = '1.*',
     opts = {
-      keymap = { preset = 'default' },
+      keymap = {
+        preset = 'enter',
+        ['<Tab>'] = { 'select_next', 'snippet_forward', 'fallback' },
+        ['<S-Tab>'] = { 'select_prev', 'snippet_backward', 'fallback' },
+        ['<C-y>'] = { 'select_and_accept', 'fallback' },
+      },
       completion = { documentation = { auto_show = true, auto_show_delay_ms = 200 } },
       signature = { enabled = true },
       fuzzy = { implementation = 'prefer_rust_with_warning' },
