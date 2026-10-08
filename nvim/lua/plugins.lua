@@ -1,6 +1,6 @@
 -- Plugin specs for lazy.nvim.
 local theme = 'onedark_vivid' -- onedarkpro variants: onedark, onedark_vivid, onedark_dark, onelight, vaporwave
-local bg = '#21252b' -- editor background; the theme's own is #282c34. Cursorline, floats and statusline follow it.
+local bg = '#171421' -- editor background: matches the Ubuntu (Yaru) GNOME Terminal profile; the theme's own is #282c34.
 local ts_langs = { 'typescript', 'tsx', 'javascript', 'lua', 'bash', 'json', 'markdown', 'markdown_inline' }
 local ts_filetypes = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact', 'lua', 'sh', 'bash', 'json', 'markdown' }
 
@@ -13,9 +13,12 @@ return {
     config = function()
       local ok = pcall(function()
         require('onedarkpro').setup({
-          colors = { [theme] = { bg = bg, black = bg } },
+          -- On this dark bg the theme's +/-2.8% derived surfaces barely separate, so they are set by hand:
+          -- cursorline a touch lighter, floats/popups lighter still (lighter reads better than darker here).
+          colors = { [theme] = { bg = bg, black = bg, cursorline = '#221e30', float_bg = '#1f1b2c' } },
           styles = { comments = 'italic', keywords = 'italic', functions = 'italic' },
           options = { cursorline = true },
+          highlights = { PmenuSel = { bg = '#2d2840' } }, -- the derived one sits on the popup bg
         })
         vim.cmd.colorscheme(theme)
       end)
