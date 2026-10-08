@@ -205,6 +205,7 @@ click() { # <y> [client]
   fi
   read -r -a ids <<<"$(opt @agentnav_rows)"
   [ "$row" -ge 0 ] && [ "$row" -lt "${#ids[@]}" ] || return
+  [ "${ids[$row]}" != - ] || return 0 # the spacer
   printf '%s' "${ids[$row]}" >"$STATE/cursor"
   case "${ids[$row]}" in
   follow) follow_toggle ;;
@@ -396,8 +397,14 @@ sidebar_key() {
     [ "${ids[j]}" = "$cur" ] && i=$j
   done
   case "$key" in
-  up) i=$((i <= 0 ? 0 : i - 1)) ;;
-  down) i=$((i < 0 ? 0 : (i >= ${#ids[@]} - 1 ? ${#ids[@]} - 1 : i + 1))) ;;
+  up)
+    i=$((i <= 0 ? 0 : i - 1))
+    [ "${ids[i]}" = - ] && i=$((i - 1)) # hop over the spacer
+    ;;
+  down)
+    i=$((i < 0 ? 0 : (i >= ${#ids[@]} - 1 ? ${#ids[@]} - 1 : i + 1)))
+    [ "${ids[i]}" = - ] && i=$((i + 1))
+    ;;
   enter)
     [ "$i" -ge 0 ] || return
     case "${ids[i]}" in
@@ -449,12 +456,16 @@ sidebar() {
     main="$(opt @agentnav_main)"
     mapfile -t ids < <(agent_panes)
     count=${#ids[@]}
-    ids+=(add follow) # "+ add agent" and the follow toggle sit under the agents and take the cursor like rows
+    ids+=(add - follow) # "+ add agent", a blank spacer ("-", never selectable) and the follow toggle
     # The cursor follows a pane id so new agents don't shift it; it rests on the main agent until moved.
     cursor="$(cat "$STATE/cursor" 2>/dev/null)"
     [[ " ${ids[*]} " == *" $cursor "* ]] || cursor="$main"
     out="\033[H\033[1m AGENTS\033[0m\033[K\n\033[K\n"
     for id in "${ids[@]}"; do
+      if [ "$id" = - ]; then
+        out+="\033[K\n"
+        continue
+      fi
       if [ "$id" = add ] || [ "$id" = follow ]; then
         if [ "$id" = add ]; then label="+ add agent"; elif follow_on; then label="◉ follow on"; else label="○ follow off"; fi
         if [ "$cursor" = "$id" ]; then out+="\033[7m   ${label}\033[K\033[0m\n"; else out+="\033[2m   ${label}\033[K\033[0m\n"; fi
