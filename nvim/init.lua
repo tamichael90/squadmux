@@ -23,8 +23,10 @@ o.clipboard = 'unnamedplus'
 o.updatetime = 250
 o.timeoutlen = 400
 -- tmux here runs as tmux-256color with RGB passthrough (COLORTERM=truecolor), so 24-bit color is safe.
--- The colorscheme (Horizon Dark) is set by its plugin spec in lua/plugins.lua.
+-- The colorscheme (NvChad's dark_horizon) is applied by the base46 spec in lua/plugins.lua; the theme
+-- name lives in lua/nvconfig.lua and the compiled highlights in this cache dir.
 o.termguicolors = true
+vim.g.base46_cache = vim.fn.stdpath('data') .. '/base46/'
 
 vim.diagnostic.config({ virtual_text = true, severity_sort = true })
 

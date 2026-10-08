@@ -29,9 +29,10 @@ telescope, completion) so hand edits feel like an IDE.
 - `agentnav/` — the sidebar and context panel (bash + a little Python), plus the tmux mouse bindings;
   it installs to `~/.config/agentnav` and keeps that name
 - `nvim/` — a ~180-line Lua Neovim config: lazy.nvim, vtsls / lua_ls / bashls via mason, treesitter,
-  telescope, gitsigns, blink.cmp, format on save, Horizon Dark theme via akinsho/horizon.nvim (set
-  `background` to `light` in its spec in `nvim/lua/plugins.lua` for the light variant, or replace the spec
-  and the `colorscheme` name for another theme)
+  telescope, gitsigns, blink.cmp, format on save, NvChad's dark_horizon theme via NvChad/base46 used
+  standalone. The theme is the `local theme = 'dark_horizon'` line at the top of `nvim/lua/plugins.lua`;
+  `'ayu_dark'` or any other name from nvchad.com/themes works, and the highlights recompile on the next
+  start
 - `install.sh` — installs Neovim, ripgrep, fd, fzf and the tree-sitter CLI into `~/.local` (no sudo),
   links the configs, and wires tmux, bash and the Claude Code hooks
 
