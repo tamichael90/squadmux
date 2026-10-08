@@ -200,21 +200,34 @@ column_width() {
 # column width is the user's: a resize (mouse drag or resize-pane) is remembered. The stored width is
 # re-applied (clamped to the window) after a join-pane repair and whenever the window itself changed
 # size, so a small window never overwrites the preference; below MIN_WIDTH the column snaps to 12.
+# Non-panel panes (agents, the viewer) currently in the sidebar's window.
+home_occupants() { tmux list-panes -t "$1" -F '#{pane_id} #{@agentnav_role}' | awk '$2 != "sidebar" && $2 != "context" { print $1 }'; }
+
 fix_layout() { # callers hold the layout lock
-  local side main cand live ww
+  local side main cand occupant live ww p
   side="$(opt @agentnav_sidebar)"
   main="$(opt @agentnav_main)"
   alive "$side" || return
   # Main dead, or alive but parked in another window (what an interleaved swap left behind): put it,
-  # or the lead when it is gone, back next to the sidebar.
+  # or the lead when it is gone, into the slot, swapping with whatever sits there (e.g. the viewer).
   if ! alive "$main" || [ "$(win_of "$main")" != "$(win_of "$side")" ]; then
     cand="$main"
     alive "$cand" || cand="$(agent_panes | head -1)"
     [ -n "$cand" ] || return
-    tmux join-pane -hf -s "$cand" -t "$side" 2>>"$STATE/log" || return
+    occupant="$(home_occupants "$side" | head -1)"
+    if [ -n "$occupant" ] && [ "$occupant" != "$cand" ]; then
+      tmux swap-pane -d -s "$cand" -t "$occupant" 2>>"$STATE/log" || return
+    else
+      tmux join-pane -hf -s "$cand" -t "$side" 2>>"$STATE/log" || return
+    fi
     setopt @agentnav_main "$cand"
     tmux resize-pane -t "$side" -x "$(column_width "$side")"
   fi
+  # Anything else beside the panels that is not main (a stranded viewer, an extra agent) gets parked.
+  main="$(opt @agentnav_main)"
+  for p in $(home_occupants "$side"); do
+    [ "$p" = "$main" ] || tmux break-pane -d -s "$p" -n "agent"
+  done
   read -r live ww < <(tmux display -p -t "$side" '#{pane_width} #{window_width}')
   if [ "$ww" != "$(cat "$STATE/winw" 2>/dev/null)" ]; then
     printf '%s' "$ww" >"$STATE/winw" # the window changed, not the user: restore the preference
