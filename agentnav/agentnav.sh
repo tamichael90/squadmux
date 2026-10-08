@@ -154,8 +154,16 @@ pane_label() {
 }
 
 # Move every agent pane that isn't in the main slot into its own background window.
+# Layout changes (show, adopt/fix_layout, and follow's swap through open_file/show) run under
+# $STATE/layout.lock and re-read @agentnav_main inside it, so two quick clicks or a click racing the
+# follow hook queue instead of both swapping against the same stale main.
+layout_lock() { exec 6>"$STATE/layout.lock"; lock 6; }
+layout_unlock() { lock -u 6; exec 6>&-; }
+win_of() { tmux display -p -t "$1" '#{window_id}' 2>/dev/null; }
+
 adopt() {
   local main id count
+  layout_lock
   main="$(opt @agentnav_main)"
   for id in $(agent_panes); do
     [ "$id" = "$main" ] && continue
@@ -163,6 +171,7 @@ adopt() {
     [ "$count" -gt 1 ] && tmux break-pane -d -s "$id" -n "agent"
   done
   fix_layout
+  layout_unlock
 }
 
 # Keep the home window as [sidebar/context | main]; fall back to the lead if the main pane died.
@@ -191,16 +200,19 @@ column_width() {
 # column width is the user's: a resize (mouse drag or resize-pane) is remembered. The stored width is
 # re-applied (clamped to the window) after a join-pane repair and whenever the window itself changed
 # size, so a small window never overwrites the preference; below MIN_WIDTH the column snaps to 12.
-fix_layout() {
-  local side main lead live ww
+fix_layout() { # callers hold the layout lock
+  local side main cand live ww
   side="$(opt @agentnav_sidebar)"
   main="$(opt @agentnav_main)"
   alive "$side" || return
-  if ! alive "$main"; then
-    lead="$(agent_panes | head -1)"
-    [ -n "$lead" ] || return
-    tmux join-pane -hf -s "$lead" -t "$side" 2>>"$STATE/log" || return
-    setopt @agentnav_main "$lead"
+  # Main dead, or alive but parked in another window (what an interleaved swap left behind): put it,
+  # or the lead when it is gone, back next to the sidebar.
+  if ! alive "$main" || [ "$(win_of "$main")" != "$(win_of "$side")" ]; then
+    cand="$main"
+    alive "$cand" || cand="$(agent_panes | head -1)"
+    [ -n "$cand" ] || return
+    tmux join-pane -hf -s "$cand" -t "$side" 2>>"$STATE/log" || return
+    setopt @agentnav_main "$cand"
     tmux resize-pane -t "$side" -x "$(column_width "$side")"
   fi
   read -r live ww < <(tmux display -p -t "$side" '#{pane_width} #{window_width}')
@@ -217,18 +229,20 @@ fix_layout() {
 
 show() {
   local target="$1" main side
-  main="$(opt @agentnav_main)"
   alive "$target" || return
+  layout_lock
+  side="$(opt @agentnav_sidebar)"
+  main="$(opt @agentnav_main)" # read under the lock: another show may just have changed it
   if [ "$target" != "$main" ]; then
-    if alive "$main"; then
+    if alive "$main" && [ "$(win_of "$main")" = "$(win_of "$side")" ]; then
       tmux swap-pane -d -s "$target" -t "$main"
     else
-      # The main pane just died (e.g. the viewer was quit); refill the slot instead of swapping.
-      side="$(opt @agentnav_sidebar)"
+      # The main slot is empty (viewer quit) or main sits parked elsewhere: refill instead of swapping.
       alive "$side" && tmux join-pane -hf -s "$target" -t "$side" && tmux resize-pane -t "$side" -x "$(column_width "$side")"
     fi
     setopt @agentnav_main "$target"
   fi
+  layout_unlock
   tmux select-pane -t "$target"
 }
 
