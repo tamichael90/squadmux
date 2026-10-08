@@ -115,9 +115,13 @@ Panels take keys when they are the active tmux pane (click a panel's title, or `
 "⌕ search files" lists every file under the current roots (prefixed with the root's name) in an fd + fzf
 picker with a preview; picking one expands the tree down to it, highlights it and opens it in the
 viewer. Without fd and fzf it falls back to a tmux "Open file:" prompt that takes a path relative to the
-main pane's working directory. "+ add folder" opens an fd + fzf picker rooted at the main pane's working directory (`Enter` adds the
-highlighted directory, `Alt-Enter` adds what you typed as an absolute, `~/` or relative path, ESC
-cancels). Without fd and fzf it falls back to a
+main pane's working directory. "+ add folder" opens an fd + fzf picker rooted at the main pane's working directory. The first entry
+`.` is the current base itself. `Enter` adds the highlighted directory, `Alt-Enter` adds what you typed
+(absolute, `~/` or relative to the base), ESC cancels. To reach folders elsewhere: `Ctrl-U` goes up one
+level, `Ctrl-H` jumps to `~`, `Ctrl-R` to `/` (both listed 4 levels deep), `Ctrl-D` descends into the
+highlighted directory, and typing a path shape such as `~/Doc`, `/tmp/` or `../` re-roots the listing at
+the longest existing directory prefix and keeps the rest as the filter. The header always shows the
+current base. Needs fzf >= 0.46 (`install.sh` installs a current one). Without fd and fzf it falls back to a
 tmux prompt, where relative paths resolve against the same directory.
 
 Files open in one Neovim instance per tmux session (`nvim --listen`), reused across opens so

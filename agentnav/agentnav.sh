@@ -7,7 +7,7 @@
 # Usage: agentnav.sh start [lead-pane] | stop | auto <pane> | click <row> <pane> | show <pane>
 #        | state <working|waiting|idle> | ctxclick <row> <pane> <client> | ctxadd <dir> [pane] | ctxrm <dir> [pane]
 #        | ctxscroll <+n|-n> <pane> | ctxpick <pane> | ctxsearch <pane> | ctxopen <path> <pane>
-#        | ctxactivate <row> <client> <pane> | open <file> [pane]
+#        | ctxactivate <row> <client> <pane> | pickbase <pane> <action> [arg] | open <file> [pane]
 # The click bindings and auto-start hook live in agentnav.tmux. Both panels also take Up/Down/Enter
 # (and Left/Right in CONTEXT) when focused; the pane process reads the keys itself.
 set -u
@@ -610,23 +610,83 @@ close_viewer() {
   alive "$p" && tmux kill-pane -t "$p"
 }
 
-# Runs inside the add-folder popup: fd lists directories under ctx_base, fzf picks one. Alt-Enter
-# (or Enter with no match) adds the typed query as a path instead; ESC adds nothing.
-# fzf prints: query, then the key that ended it ("" for Enter), then the selection.
+# The folder picker's base directory lives in $STATE/pickbase so fzf key bindings (which run this
+# script again) can move it: pick_base list|header|up|home|root|into <dir>|prefix <query>.
+# Listings are relative to the base, "." first (the base itself); $HOME and / are listed 4 deep.
+pick_base() {
+  local action="$1" arg="${2:-}" base cand rest pb
+  base="$(cat "$STATE/pickbase" 2>/dev/null)"
+  [ -d "$base" ] || base="$(ctx_base)"
+  pb="$(printf '%q' "$SELF") pickbase $(opt @agentnav_context)"
+  case "$action" in
+  list)
+    printf '.\n'
+    (cd "$base" && fd --type d --hidden --exclude .git --exclude node_modules $(pick_depth "$base") 2>/dev/null)
+    return 0
+    ;;
+  header)
+    printf 'under %s   Enter: add highlighted   Alt-Enter: add as typed   C-u up   C-h ~   C-r /   C-d into' "$base"
+    return 0
+    ;;
+  up) base="$(dirname "$base")" ;;
+  home) base="$HOME" ;;
+  root) base=/ ;;
+  into) [ "$arg" = . ] || base="$base/$arg" ;;
+  prefix)
+    # A query with a path shape re-roots the listing at its longest existing directory prefix and
+    # keeps the rest as the query: "~/Doc" -> base ~, query "Doc"; "/tmp/" -> base /tmp.
+    case "$arg" in
+    /*) cand="$arg" ;;
+    '~/'*) cand="$HOME/${arg#\~/}" ;;
+    */*) cand="$base/$arg" ;; # includes "../": a bare ".." must wait for its slash
+    *) return 0 ;;
+    esac
+    rest=""
+    while [ ! -d "$cand" ]; do
+      rest="$(basename "$cand")${rest:+/$rest}"
+      cand="$(dirname "$cand")"
+    done
+    base="$(realpath_f "$cand")"
+    printf '%s' "$base" >"$STATE/pickbase"
+    printf 'change-query(%s)+reload(%s list)+transform-header(%s header)' "${rest//)/}" "$pb" "$pb"
+    return 0
+    ;;
+  *) return 0 ;;
+  esac
+  base="$(realpath_f "$base")"
+  [ -d "$base" ] && printf '%s' "$base" >"$STATE/pickbase"
+  return 0
+}
+pick_depth() { case "$1" in "$HOME" | /) printf -- '--max-depth 4' ;; esac; }
+
+# Runs inside the add-folder popup: fd lists directories under the base (initially the main pane's
+# cwd), fzf picks one; C-u/C-h/C-r/C-d and path-shaped queries move the base (see pick_base).
+# Enter adds the highlighted dir ("." = the base), Alt-Enter or Enter with no match adds the typed
+# query relative to the base; ESC adds nothing. fzf prints: query, the key that ended it, selection.
 ctx_pick() {
-  local base out dir rc
-  base="$(ctx_base)"
-  out="$(fd --type d --hidden --exclude .git --exclude node_modules . "$base" 2>/dev/null |
-    fzf --prompt 'Add folder> ' --height 100% --reverse --print-query --expect=alt-enter \
-      --header "under $base. Enter: add highlighted dir. Alt-Enter: add the path as typed (absolute, ~/ or relative)")"
+  local base out dir rc query key sel pb jump
+  printf '%s' "$(ctx_base)" >"$STATE/pickbase"
+  pb="$(printf '%q' "$SELF") pickbase $(opt @agentnav_context)"
+  jump="+clear-query+reload($pb list)+transform-header($pb header)"
+  out="$(pick_base list | fzf --prompt 'Add folder> ' --height 100% --reverse --print-query --expect=alt-enter \
+    --header "$(pick_base header)" \
+    --bind "ctrl-u:execute-silent($pb up)$jump" \
+    --bind "ctrl-h:execute-silent($pb home)$jump" \
+    --bind "ctrl-r:execute-silent($pb root)$jump" \
+    --bind "ctrl-d:execute-silent($pb into {})$jump" \
+    --bind "change:transform($pb prefix {q})")"
   rc=$?
+  base="$(cat "$STATE/pickbase")"
+  query="$(printf '%s\n' "$out" | sed -n 1p)"
+  key="$(printf '%s\n' "$out" | sed -n 2p)"
+  sel="$(printf '%s\n' "$out" | sed -n 3p)"
   case "$rc" in
-  0) [ "$(printf '%s\n' "$out" | sed -n 2p)" = alt-enter ] && dir="$(printf '%s\n' "$out" | sed -n 1p)" ||
-    dir="$(printf '%s\n' "$out" | sed -n 3p)" ;;
-  1) dir="$(printf '%s\n' "$out" | sed -n 1p)" ;; # nothing matched: take the query
+  0) if [ "$key" = alt-enter ]; then dir="$query"; else dir="$sel"; fi ;;
+  1) dir="$query" ;; # nothing matched: take the query
   *) return 0 ;;
   esac
   [ -n "$dir" ] || return 0
+  case "$dir" in .) dir="$base" ;; /* | '~'*) ;; *) dir="$base/$dir" ;; esac
   ctx_add "$dir" || sleep 1.5 # keep the popup up long enough to read the error
 }
 
@@ -838,6 +898,7 @@ show) use_session_of "${2:?pane}" && show "$2" ;;
 ctxclick) use_session_of "${3:?pane}" && ctx_click "${2:?row}" "${4:?client}" || true ;;
 ctxadd) use_session_of "$(pane_arg "${3:-${TMUX_PANE:?}}")" && ctx_add "${2:?dir}" ;;
 ctxpick) use_session_of "${2:?pane}" && ctx_pick ;;
+pickbase) use_session_of "$(pane_arg "${2:?pane}")" && pick_base "${3:?action}" "${4:-}" ;;
 ctxsearch) use_session_of "${2:?pane}" && ctx_search ;;
 ctxactivate) use_session_of "${4:?pane}" && ctx_activate "${2:?row}" "${3:?client}" || true ;;
 ctxopen) use_session_of "$(pane_arg "${3:?pane}")" && ctx_open_path "${2:?path}" ;;
