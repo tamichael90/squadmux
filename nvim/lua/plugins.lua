@@ -3,15 +3,15 @@ local ts_langs = { 'typescript', 'tsx', 'javascript', 'lua', 'bash', 'json', 'ma
 local ts_filetypes = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact', 'lua', 'sh', 'bash', 'json', 'markdown' }
 
 return {
-  -- Theme: One Monokai (One Dark + Monokai hybrid). Swap the spec and the colorscheme name to change it.
+  -- Theme: carbonfox from nightfox.nvim. Siblings: nightfox, duskfox, nordfox, terafox, dawnfox, dayfox.
   {
-    'cpea2506/one_monokai.nvim',
+    'EdenEast/nightfox.nvim',
     lazy = false,
     priority = 1000,
     config = function()
       local ok = pcall(function()
-        require('one_monokai').setup({ transparent = false, italics = true })
-        vim.cmd.colorscheme('one_monokai')
+        require('nightfox').setup({ options = { transparent = false, styles = { comments = 'italic' } } })
+        vim.cmd.colorscheme('carbonfox')
       end)
       if not ok then vim.cmd.colorscheme('default') end
     end,
