@@ -210,11 +210,10 @@ setting survives a restart). With follow on, each edit also expands the tree dow
 cursor on it and shows it in the shared Neovim viewer, reloading the buffer with `:checktime` so the
 change appears at once. Two rules keep this from getting in the way:
 
-- The viewer is swapped into the main slot and focused only when the active pane is the viewer or one
-  of the panels. While you are typing in an agent pane the viewer is updated in place (it may be
-  parked) and a one-line tmux message names the file and the agent instead.
-- A viewer whose current buffer has unsaved changes is never touched: the file is only marked and
-  revealed, and the message says so.
+- The viewer is swapped into the main slot on every edit; turn follow off while you want to type
+  undisturbed.
+- A viewer whose current buffer (or the edited file's buffer) has unsaved changes is never touched: the
+  file is only marked and revealed, and a one-line tmux message says so.
 
 With several agents the viewer follows the most recent edit; the markers show all of them.
 

@@ -356,13 +356,12 @@ print(d.get("file_path") or d.get("notebook_path") or "")' 2>/dev/null)"
   return 0
 }
 
-# follow_file <file> <pane>: reveal the file in the tree and show it in the viewer. The viewer is swapped
-# into the main slot and focused only when the active pane is the viewer or a panel; while the user is in
-# an agent pane the viewer is updated in place (it may be parked) and a message says what happened. The
-# viewer is left alone, apart from the message, when its current buffer or the target file's buffer is
+# follow_file <file> <pane>: reveal the file in the tree and swap the viewer showing it into the main
+# slot on every edit (turn follow off to type undisturbed). The viewer is left alone, apart from a
+# message, when it is blocked on a prompt or when its current buffer or the target file's buffer is
 # modified (switching to a modified hidden buffer would park nvim on a W12 prompt).
 follow_file() {
-  local file="$1" pane="$2" label active role viewer quiet=1 fq
+  local file="$1" pane="$2" label viewer fq
   ctx_reveal "$file"
   label="$(pane_label "$pane")"
   viewer="$(opt @agentnav_viewer)"
@@ -379,11 +378,7 @@ follow_file() {
       ;;
     esac
   fi
-  active="$(tmux display -p -t "$T" '#{pane_id}')"
-  role="$(popt "$active" @agentnav_role)"
-  case "$role" in viewer | sidebar | context) quiet=0 ;; esac
-  open_file "$file" "$quiet"
-  [ "$quiet" = 1 ] && tmux display-message "follow: $(basename "$file") edited by $label"
+  open_file "$file" 0
   nvim_state && nvim_rpc 2 --remote-send '<cmd>checktime<CR>' >/dev/null 2>&1 # reload a buffer edited on disk
   return 0
 }
