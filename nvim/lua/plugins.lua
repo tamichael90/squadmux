@@ -3,15 +3,16 @@ local ts_langs = { 'typescript', 'tsx', 'javascript', 'lua', 'bash', 'json', 'ma
 local ts_filetypes = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact', 'lua', 'sh', 'bash', 'json', 'markdown' }
 
 return {
-  -- Theme: carbonfox from nightfox.nvim. Siblings: nightfox, duskfox, nordfox, terafox, dawnfox, dayfox.
+  -- Theme: Horizon Dark (akinsho/horizon.nvim); 'background' picks the dark or light variant.
   {
-    'EdenEast/nightfox.nvim',
+    'akinsho/horizon.nvim',
+    version = '*',
     lazy = false,
     priority = 1000,
     config = function()
       local ok = pcall(function()
-        require('nightfox').setup({ options = { transparent = false, styles = { comments = 'italic' } } })
-        vim.cmd.colorscheme('carbonfox')
+        vim.o.background = 'dark'
+        vim.cmd.colorscheme('horizon')
       end)
       if not ok then vim.cmd.colorscheme('default') end
     end,
