@@ -3,15 +3,15 @@ local ts_langs = { 'typescript', 'tsx', 'javascript', 'lua', 'bash', 'json', 'ma
 local ts_filetypes = { 'typescript', 'typescriptreact', 'javascript', 'javascriptreact', 'lua', 'sh', 'bash', 'json', 'markdown' }
 
 return {
-  -- Theme. Filter: pro, octagon, machine, ristretto, spectrum or classic.
+  -- Theme: One Monokai (One Dark + Monokai hybrid). Swap the spec and the colorscheme name to change it.
   {
-    'loctvl842/monokai-pro.nvim',
+    'cpea2506/one_monokai.nvim',
     lazy = false,
     priority = 1000,
     config = function()
       local ok = pcall(function()
-        require('monokai-pro').setup({ filter = 'pro', transparent_background = false, terminal_colors = true })
-        vim.cmd.colorscheme('monokai-pro')
+        require('one_monokai').setup({ transparent = false, italics = true })
+        vim.cmd.colorscheme('one_monokai')
       end)
       if not ok then vim.cmd.colorscheme('default') end
     end,
