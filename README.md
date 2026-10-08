@@ -151,7 +151,7 @@ unsaved buffers survive. `agentnav.sh ctxadd <dir>` / `ctxrm <dir>` manage the t
 
 | VS Code-style (on top of the Vim maps) |                                               |
 | ------------------------------------- | --------------------------------------------- |
-| `Ctrl-S`                              | save (normal, insert, visual)                 |
+| `Ctrl-S` / `Ctrl-K`                   | save (normal, insert, visual) / signature help |
 | `Ctrl-P` / `Ctrl-Shift-P`             | find files / command palette                  |
 | `Ctrl-/`                              | toggle comment (line, or the selection)       |
 | `F2`                                  | rename symbol                                 |
@@ -168,11 +168,11 @@ Terminal, Ptyxis and kitty do) and tmux passes them on, which the tmux snippet e
 `extended-keys on`. Without that they degrade to `Ctrl-P`, `.`, `Ctrl-_` (still bound to comment) and
 `Ctrl-Z`. Quit stays on `<leader>q`: `Ctrl-Q` is terminal flow control.
 
-What the layer displaces: `Ctrl-S` was Neovim's insert-mode signature help (`vim.lsp.buf.signature_help`;
-map it to `<C-k>` in `nvim/lua/ide-keys.lua` if you miss it), `Ctrl-D` was half-page down (`<C-f>`/`<C-u>`
-remain), `Ctrl-P` was "line up" in normal mode (`k`), and `Ctrl-Z` was suspend (use `:suspend`). Ctrl-S
-works because Neovim turns off terminal flow control for its own screen; in a plain shell it still freezes
-output unless you run `stty -ixon`.
+What the layer displaces: `Ctrl-S` was Neovim's insert-mode signature help, which now lives on `Ctrl-K`
+(blink's signature window while completing, the LSP float otherwise); `Ctrl-D` was half-page down
+(`<C-f>`/`<C-u>` remain); `Ctrl-P` was "line up" in normal mode (`k`); `Ctrl-Z` was suspend (use
+`:suspend`). Ctrl-S works because Neovim turns off terminal flow control for its own screen; in a plain
+shell it still freezes output unless you run `stty -ixon`.
 
 ## Uninstall
 

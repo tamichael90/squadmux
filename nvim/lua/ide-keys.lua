@@ -6,6 +6,9 @@ local map = vim.keymap.set
 
 -- Save (<cmd> keeps insert mode). Quit stays on <leader>q: Ctrl-Q is terminal flow control.
 map({ 'n', 'v', 'i' }, '<C-s>', '<cmd>w<CR>', { desc = 'Save' })
+-- Ctrl-S displaced Neovim's insert-mode signature help; Ctrl-K takes it (blink's own signature window
+-- answers first while completing, this is its fallback).
+map('i', '<C-k>', vim.lsp.buf.signature_help, { desc = 'Signature help' })
 
 -- Search
 map('n', '<C-p>', '<cmd>Telescope find_files<CR>', { desc = 'Find files' })
