@@ -2,7 +2,7 @@
 # Clicking the CONTEXT panel focuses it; a sidebar click focuses the chosen agent (no-op clicks leave focus
 # alone). Arrow keys are handled by the panel processes, not bound here.
 bind -n MouseDown1Pane if -F -t = '#{==:#{@agentnav_role},sidebar}' {
-  run-shell -b -t = "~/.config/agentnav/agentnav.sh click #{mouse_y} #{pane_id}"
+  run-shell -b -t = "~/.config/agentnav/agentnav.sh click #{mouse_y} #{pane_id} #{client_name}"
 } {
   if -F -t = '#{==:#{@agentnav_role},context}' {
     select-pane -t = ; run-shell -b -t = "~/.config/agentnav/agentnav.sh ctxclick #{mouse_y} #{pane_id} #{client_name}"

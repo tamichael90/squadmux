@@ -174,6 +174,27 @@ What the layer displaces: `Ctrl-S` was Neovim's insert-mode signature help, whic
 `:suspend`). Ctrl-S works because Neovim turns off terminal flow control for its own screen; in a plain
 shell it still freezes output unless you run `stty -ixon`.
 
+## Add agent
+
+The sidebar row `+ add agent` (click or `Enter`) opens a popup form that starts a new teammate:
+
+1. **Name**, default `agent-N`, kept to letters, digits, `-` and `_`.
+2. **Role**: pick `engineer`, `reviewer`, `researcher`, `tester` or `custom`. The templates live in
+   `agentnav/roles/*.md`, written as short briefs (scope, working agreement, how to report back to
+   the lead, whose agentnav label is filled in). The chosen brief opens in `$EDITOR` (nvim, else vi)
+   for you to adjust; it is kept at `$STATE/roles/<name>.md`.
+3. **Working dirs**: a space-separated line, defaulting to the lead pane's directory plus every context
+   root; the first is the new pane's working directory, the rest become `--add-dir`.
+4. **Permissions**: "same as lead" (detected from the lead's `claude` process: `--dangerously-skip-permissions`
+   or `--permission-mode …`; messages between sessions in different modes get held for approval) or
+   "default".
+5. **First task** (optional): once the new session shows its prompt, the text is typed in and submitted.
+6. Confirm. `Ctrl-C` aborts at any step, `Esc` in a picker too.
+
+The agent starts as `claude --name <name> … --append-system-prompt-file <brief>` in a pane split off
+the main slot (or a new window when no agent pane exists), gets its sidebar label, and is parked like
+any other teammate; the main slot does not change.
+
 ## Follow mode
 
 Agents' edits reach agentnav through a Claude Code `PostToolUse` hook on `Edit|Write|MultiEdit|NotebookEdit`

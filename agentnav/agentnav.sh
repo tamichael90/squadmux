@@ -9,6 +9,7 @@
 #        | ctxscroll <+n|-n> <pane> | ctxpick <pane> | ctxsearch <pane> | ctxopen <path> <pane>
 #        | ctxactivate <row> <client> <pane> | pickbase <pane> <action> [arg] | open <file> [pane]
 #        | touched [file] [pane] (hook: reads the tool JSON on stdin) | follow [on|off|toggle] [pane]
+#        | addagent <sidebarpane> (the popup form) | addagentmodal <client> <pane>
 # The click bindings and auto-start hook live in agentnav.tmux. Both panels also take Up/Down/Enter
 # (and Left/Right in CONTEXT) when focused; the pane process reads the keys itself.
 set -u
@@ -196,8 +197,8 @@ show() {
 }
 
 # A click on a panel's header lines only gives that panel keyboard focus.
-click() {
-  local row=$(($1 - HEADER)) ids
+click() { # <y> [client]
+  local row=$(($1 - HEADER)) client="${2:-}" ids
   if [ "$row" -lt 0 ]; then
     tmux select-pane -t "$(opt @agentnav_sidebar)"
     return
@@ -205,7 +206,103 @@ click() {
   read -r -a ids <<<"$(opt @agentnav_rows)"
   [ "$row" -ge 0 ] && [ "$row" -lt "${#ids[@]}" ] || return
   printf '%s' "${ids[$row]}" >"$STATE/cursor"
-  if [ "${ids[$row]}" = follow ]; then follow_toggle; else show "${ids[$row]}"; fi
+  case "${ids[$row]}" in
+  follow) follow_toggle ;;
+  add) add_agent_modal "$client" ;;
+  *) show "${ids[$row]}" ;;
+  esac
+}
+
+# ---- add agent ---------------------------------------------------------------
+# "+ add agent" opens a popup form (add_agent) that starts `claude --name <name>` in a new pane with a
+# role brief from agentnav/roles/, which adopt() then parks like any other agent.
+
+add_agent_modal() { # <client>
+  tmux display-popup -E -w 70% -h 60% ${1:+-c "$1"} "$(printf '%q' "$SELF") addagent $(opt @agentnav_sidebar)"
+}
+
+# The lead's permission flags, from its pane start command or, when it was started from a shell, from
+# the claude process that is the shell's direct child (not a `claude daemon` further down).
+lead_mode() {
+  local lead cmd p
+  lead="$(agent_panes | head -1)"
+  cmd="$(tmux display -p -t "$lead" '#{pane_start_command}')"
+  if [ -z "$cmd" ]; then
+    for p in $(pgrep -P "$(tmux display -p -t "$lead" '#{pane_pid}')"); do
+      cmd="$(ps -o args= -p "$p")"
+      case "$cmd" in claude | claude\ * | */claude\ *) break ;; *) cmd="" ;; esac
+    done
+  fi
+  case "$cmd" in
+  *--dangerously-skip-permissions*) printf -- '--dangerously-skip-permissions' ;;
+  *--permission-mode*) printf -- '--permission-mode %s' "$(printf '%s' "$cmd" | sed -n 's/.*--permission-mode[= ]*\([^ "]*\).*/\1/p')" ;;
+  esac
+}
+
+# pick <prompt> <option>...: fzf when present, else a numbered menu; prints nothing when aborted.
+pick() {
+  local prompt="$1" o
+  shift
+  if command -v fzf >/dev/null 2>&1; then
+    printf '%s\n' "$@" | fzf --prompt "$prompt" --height 40% --reverse --no-multi
+  else
+    select o in "$@"; do printf '%s' "$o"; return; done
+  fi
+}
+
+# The form that runs inside the popup. Ctrl-C (or Esc in a picker) aborts at any step with exit 0.
+add_agent() {
+  trap 'printf "\naborted\n"; sleep 0.7; exit 0' INT
+  local lead lead_label n name role rolefile dirs mflags choice first main new cmd cwd extra ok i
+  lead="$(agent_panes | head -1)"
+  lead_label="$(pane_label "$lead")"
+  n=$(($(agent_panes | wc -l) + 1))
+  printf 'Add an agent to the team led by %s (Ctrl-C aborts)\n\n' "$lead_label"
+  read -r -e -p 'Name: ' -i "agent-$n" name || exit 0
+  name="$(printf '%s' "$name" | tr -cd 'A-Za-z0-9_-')"
+  [ -n "$name" ] || { echo 'no name, aborted'; sleep 0.7; exit 0; }
+  role="$(pick 'Role> ' engineer reviewer researcher tester custom)"
+  [ -n "$role" ] || exit 0
+  mkdir -p "$STATE/roles"
+  rolefile="$STATE/roles/$name.md"
+  sed "s/{{NAME}}/$name/g; s/{{LEAD}}/$lead_label/g" "$(dirname "$SELF")/roles/$role.md" >"$rolefile"
+  "${EDITOR:-$(command -v nvim || echo vi)}" "$rolefile"
+  dirs="$(tmux display -p -t "$lead" '#{pane_current_path}') $(tr '\n' ' ' <"$STATE/roots" 2>/dev/null)"
+  read -r -e -p 'Working dirs (first is the cwd): ' -i "$(printf '%s' "$dirs" | tr -s ' ' | sed 's/ $//')" dirs || exit 0
+  mflags="$(lead_mode)"
+  choice="$(pick 'Permissions> ' "same as lead (${mflags:-no flag})" 'default (no flag)')"
+  case "$choice" in same*) ;; default*) mflags="" ;; *) exit 0 ;; esac
+  read -r -e -p 'First task (optional): ' first || exit 0
+  printf '\nStart %s (%s) with "claude --name %s %s"? [Y/n] ' "$name" "$role" "$name" "$mflags"
+  read -r ok || exit 0
+  case "$ok" in n* | N*) echo aborted; sleep 0.7; exit 0 ;; esac
+  set -- claude --name "$name"
+  [ -n "$mflags" ] && set -- "$@" $mflags
+  cwd="${dirs%% *}"
+  extra="${dirs#"$cwd"}"
+  [ -n "${extra// /}" ] && set -- "$@" --add-dir $extra
+  set -- "$@" --append-system-prompt-file "$rolefile"
+  cmd="$(printf '%q ' "$@")"
+  main="$(opt @agentnav_main)"
+  if alive "$main"; then
+    new="$(tmux split-window -d -t "$main" -c "$cwd" -P -F '#{pane_id}' "$cmd")"
+  else
+    new="$(tmux new-window -d -c "$cwd" -P -F '#{pane_id}' "$cmd")"
+  fi
+  tmux set -p -t "$new" @agentnav_name "$name"
+  echo "started $name in pane $new"
+  if [ -n "$first" ]; then
+    printf 'waiting for the prompt to send the first task'
+    for i in $(seq 1 60); do
+      tmux capture-pane -p -t "$new" 2>/dev/null | grep -q '^❯' && break
+      printf .
+      sleep 0.5
+    done
+    tmux send-keys -t "$new" -l "$first"
+    tmux send-keys -t "$new" Enter
+    echo ' sent'
+  fi
+  sleep 1
 }
 
 # ---- follow mode -----------------------------------------------------------
@@ -274,7 +371,11 @@ sidebar_key() {
   down) i=$((i < 0 ? 0 : (i >= ${#ids[@]} - 1 ? ${#ids[@]} - 1 : i + 1))) ;;
   enter)
     [ "$i" -ge 0 ] || return
-    if [ "${ids[i]}" = follow ]; then follow_toggle; else show "${ids[i]}"; fi
+    case "${ids[i]}" in
+    follow) follow_toggle ;;
+    add) tmux run-shell -b "$(printf '%q' "$SELF") addagentmodal $(tmux display -p -t "$TMUX_PANE" '#{client_name}') $TMUX_PANE" ;;
+    *) show "${ids[i]}" ;;
+    esac
     return
     ;;
   *) return ;;
@@ -319,15 +420,15 @@ sidebar() {
     main="$(opt @agentnav_main)"
     mapfile -t ids < <(agent_panes)
     count=${#ids[@]}
-    ids+=(follow) # the "follow" toggle row sits under the agents and takes the cursor like a row
+    ids+=(add follow) # "+ add agent" and the follow toggle sit under the agents and take the cursor like rows
     # The cursor follows a pane id so new agents don't shift it; it rests on the main agent until moved.
     cursor="$(cat "$STATE/cursor" 2>/dev/null)"
     [[ " ${ids[*]} " == *" $cursor "* ]] || cursor="$main"
     out="\033[H\033[1m AGENTS\033[0m\033[K\n\033[K\n"
     for id in "${ids[@]}"; do
-      if [ "$id" = follow ]; then
-        if follow_on; then label="◉ follow on"; else label="○ follow off"; fi
-        if [ "$cursor" = follow ]; then out+="\033[7m   ${label}\033[K\033[0m\n"; else out+="\033[2m   ${label}\033[K\033[0m\n"; fi
+      if [ "$id" = add ] || [ "$id" = follow ]; then
+        if [ "$id" = add ]; then label="+ add agent"; elif follow_on; then label="◉ follow on"; else label="○ follow off"; fi
+        if [ "$cursor" = "$id" ]; then out+="\033[7m   ${label}\033[K\033[0m\n"; else out+="\033[2m   ${label}\033[K\033[0m\n"; fi
         continue
       fi
       label="$(pane_label "$id")"
@@ -976,7 +1077,9 @@ stop) use_session_of "${2:-${TMUX_PANE:?}}" && stop ;;
 sidebar) use_session_of "$TMUX_PANE" && sidebar ;;
 context) use_session_of "$TMUX_PANE" && context ;;
 auto) use_session_of "${2:?pane}" && auto ;;
-click) use_session_of "${3:?pane}" && click "${2:?row}" || true ;;
+click) use_session_of "${3:?pane}" && click "${2:?row}" "${4:-}" || true ;;
+addagent) use_session_of "${2:?pane}" && add_agent ;;
+addagentmodal) use_session_of "${3:?pane}" && add_agent_modal "${2:-}" || true ;;
 show) use_session_of "${2:?pane}" && show "$2" ;;
 ctxclick) use_session_of "${3:?pane}" && ctx_click "${2:?row}" "${4:?client}" || true ;;
 ctxadd) use_session_of "$(pane_arg "${3:-${TMUX_PANE:?}}")" && ctx_add "${2:?dir}" ;;
