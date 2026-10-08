@@ -31,7 +31,8 @@ version_ge() { # version_ge 3.6 3.3: major.minor comparison without sort -V
 }
 
 SELF="$(realpath_f "$0")"
-WIDTH=24
+WIDTH=24 # default column width; the width in use is remembered in $STATE/width (see saved_width)
+MIN_WIDTH=12
 HEADER=2 # sidebar lines above the first agent row
 CTX_HEADER=3 # context lines above the first tree row: title, "search files", "add folder"
 TEAMS_DIR="$HOME/.claude/teams"
@@ -164,8 +165,20 @@ adopt() {
 }
 
 # Keep the home window as [sidebar/context | main]; fall back to the lead if the main pane died.
+# The remembered column width: $STATE/width, else the default, never below MIN_WIDTH.
+saved_width() {
+  local w
+  w="$(cat "$STATE/width" 2>/dev/null)"
+  case "$w" in '' | *[!0-9]*) w=$WIDTH ;; esac
+  [ "$w" -ge "$MIN_WIDTH" ] || w=$MIN_WIDTH
+  printf '%s' "$w"
+}
+
+# Keep the home window as [sidebar/context | main]; fall back to the lead if the main pane died. The
+# column width is the user's: a resize (mouse drag or resize-pane) is remembered, the stored width is
+# only re-applied after a join-pane repair or when the column fell below MIN_WIDTH.
 fix_layout() {
-  local side main lead
+  local side main lead live
   side="$(opt @agentnav_sidebar)"
   main="$(opt @agentnav_main)"
   alive "$side" || return
@@ -174,9 +187,15 @@ fix_layout() {
     [ -n "$lead" ] || return
     tmux join-pane -hf -s "$lead" -t "$side" 2>>"$STATE/log" || return
     setopt @agentnav_main "$lead"
+    tmux resize-pane -t "$side" -x "$(saved_width)"
   fi
-  [ "$(tmux display -p -t "$side" '#{pane_width}')" = "$WIDTH" ] ||
-    tmux resize-pane -t "$side" -x "$WIDTH"
+  live="$(tmux display -p -t "$side" '#{pane_width}')"
+  if [ "$live" -lt "$MIN_WIDTH" ]; then
+    printf '%s' "$MIN_WIDTH" >"$STATE/width"
+    tmux resize-pane -t "$side" -x "$MIN_WIDTH"
+  elif [ "$live" != "$(saved_width)" ]; then
+    printf '%s' "$live" >"$STATE/width"
+  fi
 }
 
 show() {
@@ -189,7 +208,7 @@ show() {
     else
       # The main pane just died (e.g. the viewer was quit); refill the slot instead of swapping.
       side="$(opt @agentnav_sidebar)"
-      alive "$side" && tmux join-pane -hf -s "$target" -t "$side"
+      alive "$side" && tmux join-pane -hf -s "$target" -t "$side" && tmux resize-pane -t "$side" -x "$(saved_width)"
     fi
     setopt @agentnav_main "$target"
   fi
@@ -454,10 +473,10 @@ clear_state() {
   # The follow setting survives a restart; the touched log does not (its markers expire anyway).
   if alive "$(opt @agentnav_viewer)"; then
     # A viewer that stays (stop, or a refused :qa) keeps its pane id and socket so the next start reuses it.
-    find "$STATE" -mindepth 1 ! -name 'nvim-*.sock' ! -name follow -delete
+    find "$STATE" -mindepth 1 ! -name 'nvim-*.sock' ! -name follow ! -name width -delete
   else
     setopt -u @agentnav_viewer
-    find "$STATE" -mindepth 1 ! -name follow -delete
+    find "$STATE" -mindepth 1 ! -name follow ! -name width -delete
     [ "$SOCKDIR" = "$STATE" ] || rm -rf "$SOCKDIR"
   fi
 }
@@ -475,7 +494,7 @@ kill_aux() {
 }
 
 sidebar() {
-  local main cursor id ids label dot mark out count had_team=0 height spacers j
+  local main cursor id ids label dot mark out count had_team=0 height width spacers j
   tmux set -p -t "$TMUX_PANE" @agentnav_role sidebar
   panel_tty
   while :; do
@@ -485,7 +504,7 @@ sidebar() {
     count=${#ids[@]}
     # "+ add agent" sits under the agents; the follow toggle is pinned to the pane's last line, with
     # unselectable spacer rows ("-") in between (one spacer when the list already reaches the bottom).
-    height="$(tmux display -p -t "$TMUX_PANE" '#{pane_height}')"
+    read -r height width < <(tmux display -p -t "$TMUX_PANE" '#{pane_height} #{pane_width}')
     spacers=$((height - HEADER - count - 2))
     [ "$spacers" -ge 1 ] || spacers=1
     ids+=(add)
@@ -502,11 +521,12 @@ sidebar() {
       fi
       if [ "$id" = add ] || [ "$id" = follow ]; then
         if [ "$id" = add ]; then label="+ add agent"; elif follow_on; then label="◉ follow on"; else label="○ follow off"; fi
+        label="${label:0:$((width - 3))}" # never wrap, even at MIN_WIDTH
         if [ "$cursor" = "$id" ]; then out+="\033[7m   ${label}\033[K\033[0m\n"; else out+="\033[2m   ${label}\033[K\033[0m\n"; fi
         continue
       fi
       label="$(pane_label "$id")"
-      label="${label:0:$((WIDTH - 6))}"
+      label="${label:0:$((width - 6))}"
       # @agentnav_state is set per pane by the Claude Code hooks in ~/.claude/settings.json.
       case "$(popt "$id" @agentnav_state)" in
       working) dot="\033[32m●\033[39m" ;;
@@ -546,10 +566,10 @@ sidebar() {
 # (the sentinels are not absolute paths, so even a root at "/" cannot collide with them);
 # it survives tree changes, and a path hidden by a collapse resolves to its nearest visible ancestor.
 # $STATE/scroll_to_cursor, when present, asks for one render that scrolls the cursor row into view.
-ctx_render() {
-  local height="$1" selected
+ctx_render() { # <height> <width>
+  local height="$1" width="$2" selected
   selected="$(opt @agentnav_ctx_file)"
-  python3 - "$STATE" "$WIDTH" "$height" "$CTX_HEADER" "$selected" <<'PY'
+  python3 - "$STATE" "$width" "$height" "$CTX_HEADER" "$selected" <<'PY'
 import json, os, subprocess, sys, time
 state, width, height, header, selected = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 SKIP = {".git", "node_modules"}
@@ -726,13 +746,13 @@ PY
 }
 
 context() {
-  local height
+  local height width
   tmux set -p -t "$TMUX_PANE" @agentnav_role context
   panel_tty
   while :; do
     alive "$(opt @agentnav_sidebar)" || exit 0
-    height="$(tmux display -p -t "$TMUX_PANE" '#{pane_height}')"
-    ctx_render "$height"
+    read -r height width < <(tmux display -p -t "$TMUX_PANE" '#{pane_height} #{pane_width}')
+    ctx_render "$height" "$width"
     read_key && ctx_key "$REPLY" "$height"
   done
 }
@@ -1156,7 +1176,7 @@ start() {
   fi
   tmux set -p -t "$lead" @agentnav_role lead
   setopt @agentnav_main "$lead"
-  side="$(tmux split-window -hbd -l "$WIDTH" -t "$lead" -P -F '#{pane_id}' "$SELF sidebar")"
+  side="$(tmux split-window -hbd -l "$(saved_width)" -t "$lead" -P -F '#{pane_id}' "$SELF sidebar")"
   tmux set -p -t "$side" @agentnav_role sidebar
   setopt @agentnav_sidebar "$side"
   # The after-split-window hook runs adopt() concurrently; hold its lock so the context

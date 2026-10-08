@@ -92,7 +92,9 @@ Environment: `AGENTNAV_PREFIX` (default `~/.local`), `AGENTNAV_CONFIG` (default 
 - **Claude Code teams:** a tmux `after-split-window` hook runs `agentnav.sh auto`. When a new pane turns
   out to be a freshly spawned teammate (looked up in `~/.claude/teams/*/config.json`), the sidebar and
   context panel open next to the lead and the other agents are parked in background windows. The
-  sidebar closes itself once the team is gone.
+  sidebar closes itself once the team is gone. The left column starts 24 columns wide; drag its border
+  with the mouse or use tmux's `resize-pane -x` and the new width is kept for that tmux session
+  (minimum 12).
 - **Anything else:** from the pane that should be the lead, run `~/.config/agentnav/agentnav.sh start`
   (or `agentnav.sh start <pane-id>` from elsewhere). `agentnav.sh stop` closes the panels.
 
