@@ -593,15 +593,15 @@ def git_status(roots):
             return c["files"], c["tops"]
     except (OSError, ValueError, KeyError):
         c = {}
-    tops = c.get("tops") if c.get("roots") == roots else None
-    if tops is None:
-        tops = {}
-        for r in roots:
-            try:
-                p = git(["rev-parse", "--show-toplevel"], r, 2)
-                tops[r] = p.stdout.decode().strip() if p.returncode == 0 else ""
-            except (OSError, subprocess.TimeoutExpired):
-                tops[r] = ""
+    tops = dict(c.get("tops", {})) if c.get("roots") == roots else {}
+    for r in roots:  # resolved once; roots outside a repo are retried each refresh (a later git init)
+        if tops.get(r):
+            continue
+        try:
+            p = git(["rev-parse", "--show-toplevel"], r, 2)
+            tops[r] = p.stdout.decode().strip() if p.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            tops[r] = ""
     files = {}
     for top in sorted({t for t in tops.values() if t}):
         try:
