@@ -29,6 +29,11 @@ map('n', '<F8>', function() vim.diagnostic.jump({ count = 1, float = true }) end
 for _, key in ipairs({ '<S-F8>', '<F20>' }) do map('n', key, function() vim.diagnostic.jump({ count = -1, float = true }) end, { desc = 'Previous diagnostic' }) end
 map({ 'n', 'v' }, '<C-.>', vim.lsp.buf.code_action, { desc = 'Code action' })
 
+-- Double-click places the cursor and starts typing, like an IDE caret (single click and drag keep
+-- their defaults; the word-select on double-click is given up).
+map('n', '<2-LeftMouse>', '<LeftMouse>i', { desc = 'Click to edit' })
+map('v', '<2-LeftMouse>', '<Esc><LeftMouse>i', { desc = 'Click to edit' })
+
 -- Undo / redo (Ctrl-Y keeps its Vim meaning)
 map('n', '<C-z>', 'u', { desc = 'Undo' })
 map('i', '<C-z>', '<C-o>u', { desc = 'Undo' })

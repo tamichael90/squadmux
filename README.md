@@ -159,6 +159,7 @@ unsaved buffers survive. `agentnav.sh ctxadd <dir>` / `ctxrm <dir>` manage the t
 | `F8` / `Shift-F8`                     | next / previous diagnostic                    |
 | `Ctrl-.`                              | code action                                   |
 | `Ctrl-Z` / `Ctrl-Shift-Z`             | undo / redo                                   |
+| double-click                          | place the cursor there and enter insert mode  |
 | `Alt-Up` / `Alt-Down`                 | move the line or selection                    |
 | `Ctrl-D`                              | add a cursor at the next match; `Esc` clears  |
 
