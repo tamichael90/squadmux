@@ -322,18 +322,23 @@ print(d.get("file_path") or d.get("notebook_path") or "")' 2>/dev/null)"
   [ -n "$file" ] || return 0
   file="$(realpath_f "$file")"
   [ -f "$file" ] || return 0
-  printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$pane" "$(pane_label "$pane")" "$file" >>"$STATE/touched"
-  tail -n 200 "$STATE/touched" >"$STATE/touched.tmp" && mv "$STATE/touched.tmp" "$STATE/touched"
+  ( # two agents editing in the same instant must not lose a line to the cap
+    exec 7>"$STATE/touched.lock"
+    lock 7
+    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$pane" "$(pane_label "$pane")" "$file" >>"$STATE/touched"
+    tail -n 200 "$STATE/touched" >"$STATE/touched.tmp" && mv "$STATE/touched.tmp" "$STATE/touched"
+  )
   follow_on && follow_file "$file" "$pane"
   return 0
 }
 
 # follow_file <file> <pane>: reveal the file in the tree and show it in the viewer. The viewer is swapped
 # into the main slot and focused only when the active pane is the viewer or a panel; while the user is in
-# an agent pane the viewer is updated in place (it may be parked) and a message says what happened. A
-# viewer whose current buffer is modified is left alone apart from the message.
+# an agent pane the viewer is updated in place (it may be parked) and a message says what happened. The
+# viewer is left alone, apart from the message, when its current buffer or the target file's buffer is
+# modified (switching to a modified hidden buffer would park nvim on a W12 prompt).
 follow_file() {
-  local file="$1" pane="$2" label active role viewer quiet=1
+  local file="$1" pane="$2" label active role viewer quiet=1 fq
   ctx_reveal "$file"
   label="$(pane_label "$pane")"
   viewer="$(opt @agentnav_viewer)"
@@ -342,7 +347,8 @@ follow_file() {
     case $? in
     124) return 0 ;; # blocked on a prompt: never poke it
     0)
-      if [ "$(nvim_rpc 2 --remote-expr '&modified' 2>/dev/null)" = 1 ]; then
+      fq="$(printf '%s' "$file" | sed "s/'/''/g")"
+      if [ "$(nvim_rpc 2 --remote-expr "&modified || (bufloaded('$fq') && getbufvar(bufnr('$fq'), '&modified'))" 2>/dev/null)" = 1 ]; then
         tmux display-message "follow: $(basename "$file") edited by $label, viewer has unsaved changes"
         return 0
       fi
