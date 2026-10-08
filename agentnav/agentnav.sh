@@ -253,22 +253,40 @@ pick() {
 # The form that runs inside the popup. Ctrl-C (or Esc in a picker) aborts at any step with exit 0.
 add_agent() {
   trap 'printf "\naborted\n"; sleep 0.7; exit 0' INT
-  local lead lead_label n name role rolefile dirs mflags choice first main new cmd cwd extra ok i
+  local lead lead_label n name role rolefile dirs dir mflags choice first main new cmd cwd ok i p taken
+  local -a dirs_a extra ed
   lead="$(agent_panes | head -1)"
   lead_label="$(pane_label "$lead")"
   n=$(($(agent_panes | wc -l) + 1))
+  taken=" $(for p in $(agent_panes); do pane_label "$p"; printf ' '; done)"
   printf 'Add an agent to the team led by %s (Ctrl-C aborts)\n\n' "$lead_label"
-  read -r -e -p 'Name: ' -i "agent-$n" name || exit 0
-  name="$(printf '%s' "$name" | tr -cd 'A-Za-z0-9_-')"
-  [ -n "$name" ] || { echo 'no name, aborted'; sleep 0.7; exit 0; }
+  while :; do
+    read -r -e -p 'Name: ' -i "agent-$n" name || exit 0
+    name="$(printf '%s' "$name" | tr -cd 'A-Za-z0-9_-')"
+    [ -n "$name" ] || { echo 'no name, aborted'; sleep 0.7; exit 0; }
+    case "$taken" in *" $name "*) echo "  '$name' is already an agent here, pick another" ;; *) break ;; esac
+  done
   role="$(pick 'Role> ' engineer reviewer researcher tester custom)"
   [ -n "$role" ] || exit 0
   mkdir -p "$STATE/roles"
   rolefile="$STATE/roles/$name.md"
-  sed "s/{{NAME}}/$name/g; s/{{LEAD}}/$lead_label/g" "$(dirname "$SELF")/roles/$role.md" >"$rolefile"
-  "${EDITOR:-$(command -v nvim || echo vi)}" "$rolefile"
-  dirs="$(tmux display -p -t "$lead" '#{pane_current_path}') $(tr '\n' ' ' <"$STATE/roots" 2>/dev/null)"
-  read -r -e -p 'Working dirs (first is the cwd): ' -i "$(printf '%s' "$dirs" | tr -s ' ' | sed 's/ $//')" dirs || exit 0
+  python3 - "$name" "$lead_label" "$(dirname "$SELF")/roles/$role.md" >"$rolefile" <<'PY'
+import sys
+name, lead, path = sys.argv[1:4]
+sys.stdout.write(open(path).read().replace("{{NAME}}", name).replace("{{LEAD}}", lead))
+PY
+  read -r -a ed <<<"${EDITOR:-$(command -v nvim || echo vi)}" # EDITOR may carry arguments ("code --wait")
+  "${ed[@]}" "$rolefile" || { echo "  editor exited with status $?; using the brief as saved"; sleep 1.5; }
+  # Directories are kept as an array end to end (paths may contain spaces); shown one per line, edited as
+  # a colon-separated list. The first one is the cwd, the rest become --add-dir.
+  dirs="$(tmux display -p -t "$lead" '#{pane_current_path}')"
+  while IFS= read -r dir; do [ -n "$dir" ] && [ "$dir" != "${dirs%%:*}" ] && dirs="$dirs:$dir"; done <"$STATE/roots"
+  printf 'Working dirs (first is the cwd, the rest are --add-dir):\n'
+  printf '%s\n' "$dirs" | tr ':' '\n' | nl -w3 -s'. '
+  read -r -e -p 'Edit (colon-separated), Enter keeps: ' -i "$dirs" dirs || exit 0
+  IFS=: read -r -a dirs_a <<<"$dirs"
+  cwd="${dirs_a[0]:-$HOME}"
+  extra=("${dirs_a[@]:1}")
   mflags="$(lead_mode)"
   choice="$(pick 'Permissions> ' "same as lead (${mflags:-no flag})" 'default (no flag)')"
   case "$choice" in same*) ;; default*) mflags="" ;; *) exit 0 ;; esac
@@ -278,9 +296,7 @@ add_agent() {
   case "$ok" in n* | N*) echo aborted; sleep 0.7; exit 0 ;; esac
   set -- claude --name "$name"
   [ -n "$mflags" ] && set -- "$@" $mflags
-  cwd="${dirs%% *}"
-  extra="${dirs#"$cwd"}"
-  [ -n "${extra// /}" ] && set -- "$@" --add-dir $extra
+  [ "${#extra[@]}" -gt 0 ] && set -- "$@" --add-dir "${extra[@]}"
   set -- "$@" --append-system-prompt-file "$rolefile"
   cmd="$(printf '%q ' "$@")"
   main="$(opt @agentnav_main)"
@@ -298,9 +314,14 @@ add_agent() {
       printf .
       sleep 0.5
     done
-    tmux send-keys -t "$new" -l "$first"
-    tmux send-keys -t "$new" Enter
-    echo ' sent'
+    if tmux capture-pane -p -t "$new" 2>/dev/null | grep -q '^❯'; then
+      tmux send-keys -t "$new" -l "$(printf '%s' "$first" | tr '\n' ' ')" # one message, no stray Enters
+      tmux send-keys -t "$new" Enter
+      echo ' sent'
+    else
+      echo ' no prompt within 30s, task NOT sent (type it into the pane yourself)'
+      sleep 2
+    fi
   fi
   sleep 1
 }
