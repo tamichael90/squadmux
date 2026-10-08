@@ -74,8 +74,11 @@ tools that are already present. It then symlinks `agentnav/` to `~/.config/agent
 `~/.config/nvim` (an existing config is moved to `~/.config/nvim.bak.<timestamp>`, never deleted),
 appends marker-guarded blocks to `~/.tmux.conf` and `~/.bashrc`, merges `claude/hooks.json` into
 `~/.claude/settings.json` (backed up first), and runs the Neovim plugin / parser / server install.
-Note that the tmux block turns `mouse` on globally and the bash block adds `alias vim=nvim`; drop
-either line from the block if you do not want it.
+Note that the tmux block turns `mouse` on globally and the bash block adds `alias vim=nvim`. The
+installer compares an existing block with the snippet and refreshes it (keeping a `.bak.<timestamp>`
+copy) when the snippet has changed, so an edit inside the markers is undone by the next `install.sh`
+run; to keep a change, put it outside the markers (later lines in `~/.tmux.conf` override earlier
+ones) or edit `tmux/agentnav.tmux.conf` in your clone.
 
 On macOS the shell block goes to `~/.zshrc` (when `$SHELL` is zsh) and downloaded archives are
 cleared of the Gatekeeper quarantine attribute before extraction.
@@ -164,6 +167,12 @@ terminal sends extended key codes (modifyOtherKeys or the kitty keyboard protoco
 Terminal, Ptyxis and kitty do) and tmux passes them on, which the tmux snippet enables with
 `extended-keys on`. Without that they degrade to `Ctrl-P`, `.`, `Ctrl-_` (still bound to comment) and
 `Ctrl-Z`. Quit stays on `<leader>q`: `Ctrl-Q` is terminal flow control.
+
+What the layer displaces: `Ctrl-S` was Neovim's insert-mode signature help (`vim.lsp.buf.signature_help`;
+map it to `<C-k>` in `nvim/lua/ide-keys.lua` if you miss it), `Ctrl-D` was half-page down (`<C-f>`/`<C-u>`
+remain), `Ctrl-P` was "line up" in normal mode (`k`), and `Ctrl-Z` was suspend (use `:suspend`). Ctrl-S
+works because Neovim turns off terminal flow control for its own screen; in a plain shell it still freezes
+output unless you run `stty -ixon`.
 
 ## Uninstall
 
