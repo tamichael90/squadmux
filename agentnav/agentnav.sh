@@ -702,13 +702,16 @@ popup() {
 }
 
 # prompt <client> <label> <subcommand>: tmux prompt fallback. The template is re-parsed by tmux, which
-# eats shell escapes and treats %1..%9 as response placeholders (so a pane id like %110 cannot appear
-# in it); the script path and the context pane travel through the server environment instead.
+# eats shell escapes and treats %1..%9 as response placeholders, so the script path travels through
+# the server environment (same for every session) and the context pane id goes without its "%"
+# (pane_arg puts it back).
 prompt() {
+  local ctx
+  ctx="$(opt @agentnav_context)"
   tmux set-environment -g AGENTNAV_SELF "$SELF"
-  tmux set-environment -g AGENTNAV_CTX "$(opt @agentnav_context)"
-  tmux command-prompt -t "$1" -p "$2" "run-shell -b \"\\\"\\\$AGENTNAV_SELF\\\" $3 '%%' \\\"\\\$AGENTNAV_CTX\\\"\""
+  tmux command-prompt -t "$1" -p "$2" "run-shell -b \"\\\"\\\$AGENTNAV_SELF\\\" $3 '%%' ${ctx#%}\""
 }
+pane_arg() { case "$1" in %*) printf '%s' "$1" ;; *) printf '%%%s' "$1" ;; esac; }
 
 # ctx_activate <row> <client>: what Enter or a click does on a row (0 search, 1 add folder, else tree).
 ctx_activate() {
@@ -833,11 +836,11 @@ auto) use_session_of "${2:?pane}" && auto ;;
 click) use_session_of "${3:?pane}" && click "${2:?row}" || true ;;
 show) use_session_of "${2:?pane}" && show "$2" ;;
 ctxclick) use_session_of "${3:?pane}" && ctx_click "${2:?row}" "${4:?client}" || true ;;
-ctxadd) use_session_of "${3:-${TMUX_PANE:?}}" && ctx_add "${2:?dir}" ;;
+ctxadd) use_session_of "$(pane_arg "${3:-${TMUX_PANE:?}}")" && ctx_add "${2:?dir}" ;;
 ctxpick) use_session_of "${2:?pane}" && ctx_pick ;;
 ctxsearch) use_session_of "${2:?pane}" && ctx_search ;;
 ctxactivate) use_session_of "${4:?pane}" && ctx_activate "${2:?row}" "${3:?client}" || true ;;
-ctxopen) use_session_of "${3:?pane}" && ctx_open_path "${2:?path}" ;;
+ctxopen) use_session_of "$(pane_arg "${3:?pane}")" && ctx_open_path "${2:?path}" ;;
 ctxrm) use_session_of "${3:-${TMUX_PANE:?}}" && ctx_rm "${2:?dir}" ;;
 ctxscroll) use_session_of "${3:?pane}" && ctx_scroll "${2:?delta}" ;;
 open) use_session_of "${3:-${TMUX_PANE:?}}" && open_file "${2:?file}" ;;
