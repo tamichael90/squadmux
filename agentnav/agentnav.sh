@@ -646,8 +646,9 @@ pick_base() {
       rest="$(basename "$cand")${rest:+/$rest}"
       cand="$(dirname "$cand")"
     done
-    base="$(realpath_f "$cand")"
-    printf '%s' "$base" >"$STATE/pickbase"
+    cand="$(realpath_f "$cand")"
+    [ "$cand" != "$base" ] || return 0 # same base: leave the query (and the cursor) alone
+    printf '%s' "$cand" >"$STATE/pickbase"
     printf 'change-query(%s)+reload(%s list)+transform-header(%s header)' "${rest//)/}" "$pb" "$pb"
     return 0
     ;;
@@ -657,7 +658,13 @@ pick_base() {
   [ -d "$base" ] && printf '%s' "$base" >"$STATE/pickbase"
   return 0
 }
-pick_depth() { case "$1" in "$HOME" | /) printf -- '--max-depth 4' ;; esac; }
+# Shallow listings for the two huge bases; /proc, /sys and /dev would take seconds even at depth 4.
+pick_depth() {
+  case "$1" in
+  /) printf -- '--max-depth 4 --exclude proc --exclude sys --exclude dev' ;;
+  "$HOME") printf -- '--max-depth 4' ;;
+  esac
+}
 
 # Runs inside the add-folder popup: fd lists directories under the base (initially the main pane's
 # cwd), fzf picks one; C-u/C-h/C-r/C-d and path-shaped queries move the base (see pick_base).
