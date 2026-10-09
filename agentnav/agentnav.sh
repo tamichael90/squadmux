@@ -403,12 +403,87 @@ follow_toggle() { if follow_on; then follow_set off; else follow_set on; fi; }
 # touched <pane> [file]: record an edit (file from the argument or the hook JSON on stdin). The hook
 # JSON also carries the diff (tool_response.structuredPatch), from which the first and last changed
 # line are taken so the viewer can jump there.
+# --- Which pane a Claude Code hook belongs to ---------------------------------
+# A hook normally inherits $TMUX_PANE from the agent's pane. A session hosted in
+# the background (claude's daemon, reached from the pane by an attached client)
+# or forked from another runs outside tmux and has none, so state and follow
+# updates were silently dropped. hook_pane finds the pane anyway, or nothing:
+#   1. $TMUX_PANE, as before;
+#   2. the nearest ancestor process whose environment has it (the background
+#      session's daemon is started by the pane's own claude client);
+#   3. a pane recorded for this session id, or for one it was forked or resumed
+#      from (the hook's session_id, CLAUDE_CODE_SESSION_ID, and the
+#      --session-id / --resume values on its ancestors' command lines);
+#   4. the one pane whose @agentnav_name is the session's --name.
+# Every hook that knows its pane records session id → pane, so a later hook of
+# that session, or of a fork resumed from it, resolves in one lookup. A
+# recorded pane must still exist. Nothing found means nothing done.
+HOOK_JSON=""
+hook_read() { [ -t 0 ] || HOOK_JSON="$(timeout 2 cat 2>/dev/null)"; return 0; }
+hook_field() { [[ $HOOK_JSON =~ \"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && printf '%s' "${BASH_REMATCH[1]}"; }
+sessions_dir() { local b="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"; printf '%s/agentnav-sessions' "${b%/}"; }
+remember_session() {
+  local dir
+  [[ ${1:-} =~ ^[A-Za-z0-9_-]+$ ]] && [ -n "${TMUX:-}" ] || return 0
+  dir="$(sessions_dir)"
+  private_dir "$dir" 2>/dev/null || return 0
+  printf '%s %s\n' "${TMUX%%,*}" "$TMUX_PANE" >"$dir/$1"
+}
+# "<parent pid>" and the NUL-separated command line / environment of a process.
+proc_ppid() {
+  local stat
+  if [ -r "/proc/$1/stat" ]; then stat="$(<"/proc/$1/stat")"; stat="${stat##*) }"; set -- $stat; echo "$2"
+  else ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '; fi
+}
+proc_args() { if [ -r "/proc/$1/cmdline" ]; then tr '\0' '\n' <"/proc/$1/cmdline"; else ps -o command= -p "$1" 2>/dev/null | tr ' ' '\n'; fi; }
+proc_env() { [ -r "/proc/$1/environ" ] && tr '\0' '\n' <"/proc/$1/environ"; }
+hook_pane() {
+  local sid p env pane sock args id entry name="" ids=() names=() matches
+  sid="$(hook_field session_id)"
+  if [ -n "${TMUX_PANE:-}" ]; then remember_session "$sid"; return 0; fi
+  ids=("$sid" "${CLAUDE_CODE_SESSION_ID:-}")
+  p="$PPID"
+  while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+    env="$(proc_env "$p")"
+    pane="$(sed -n 's/^TMUX_PANE=//p' <<<"$env")"
+    sock="$(sed -n 's/^TMUX=//p' <<<"$env")"
+    if [ -n "$pane" ] && [ -n "$sock" ] && TMUX="$sock" alive "$pane"; then
+      export TMUX="$sock" TMUX_PANE="$pane"
+      for id in "${ids[@]}"; do remember_session "$id"; done
+      return 0
+    fi
+    args="$(proc_args "$p")"
+    while IFS= read -r id; do ids+=("$id"); done < <(awk 'prev == "--session-id" || prev == "--resume" { sub(/.*\//, ""); sub(/\.jsonl$/, ""); print } { prev = $0 }' <<<"$args")
+    name="$(awk 'prev == "--name" { print; exit } { prev = $0 }' <<<"$args")"
+    [ -n "$name" ] && names+=("$name")
+    p="$(proc_ppid "$p")"
+  done
+  for id in "${ids[@]}"; do
+    [[ $id =~ ^[A-Za-z0-9_-]+$ ]] && [ -f "$(sessions_dir)/$id" ] || continue
+    read -r sock pane <"$(sessions_dir)/$id"
+    if TMUX="$sock,0,0" alive "$pane"; then
+      export TMUX="$sock,0,0" TMUX_PANE="$pane"
+      remember_session "$sid"
+      return 0
+    fi
+  done
+  for name in "${names[@]}"; do
+    matches="$(tmux list-panes -a -F '#{pane_id} #{@agentnav_name}' 2>/dev/null | awk -v n="$name" '$2 == n { print $1 }')"
+    if [ -n "$matches" ] && [ "$(wc -l <<<"$matches")" -eq 1 ]; then
+      export TMUX_PANE="$matches" TMUX="$(tmux display -p '#{socket_path},0,0' 2>/dev/null)"
+      remember_session "$sid"
+      return 0
+    fi
+  done
+  return 1
+}
+
 touched() {
   local pane="$1" file="${2:-}" first=0 last=0
   if [ -z "$file" ]; then
     # The JSON is kept (one file, overwritten) so the payload shape can be inspected.
     # "first last path" so a path with spaces lands whole in the last read variable.
-    read -r first last file < <(tee "$STATE/last-hook.json" | python3 -c '
+    read -r first last file < <(printf '%s' "$HOOK_JSON" | tee "$STATE/last-hook.json" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 t = d.get("tool_input", {})
@@ -1290,7 +1365,7 @@ stop() {
 }
 
 case "${1:-}" in
-state) [ -z "${TMUX_PANE:-}" ] || tmux set -p -t "$TMUX_PANE" @agentnav_state "${2:?state}" ;;
+state) hook_read && hook_pane && tmux set -p -t "$TMUX_PANE" @agentnav_state "${2:?state}" || true ;;
 start)
   use_session_of "${2:-${TMUX_PANE:?run inside tmux or pass a pane}}" && start "${2:-$TMUX_PANE}"
   ;;
@@ -1308,7 +1383,10 @@ ctxpick) use_session_of "${2:?pane}" && ctx_pick ;;
 pickbase) use_session_of "$(pane_arg "${2:?pane}")" && pick_base "${3:?action}" "${4:-}" ;;
 ctxsearch) use_session_of "${2:?pane}" && ctx_search ;;
 ctxactivate) use_session_of "${4:?pane}" && ctx_activate "${2:?row}" "${3:?client}" || true ;;
-touched) [ -n "${3:-${TMUX_PANE:-}}" ] && use_session_of "${3:-$TMUX_PANE}" && touched "${3:-$TMUX_PANE}" "${2:-}" || true ;;
+touched)
+  if [ -n "${3:-}" ]; then use_session_of "$3" && touched "$3" "${2:-}" || true
+  else { [ -n "${2:-}" ] || hook_read; } && hook_pane && use_session_of "$TMUX_PANE" && touched "$TMUX_PANE" "${2:-}" || true; fi
+  ;;
 follow)
   use_session_of "${3:-${TMUX_PANE:?}}" || exit 1
   case "${2:-toggle}" in on | off) follow_set "$2" ;; *) follow_toggle ;; esac
