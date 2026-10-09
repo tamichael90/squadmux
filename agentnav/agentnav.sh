@@ -407,29 +407,49 @@ follow_toggle() { if follow_on; then follow_set off; else follow_set on; fi; }
 # A hook normally inherits $TMUX_PANE from the agent's pane. A session hosted in
 # the background (claude's daemon, reached from the pane by an attached client)
 # or forked from another runs outside tmux and has none, so state and follow
-# updates were silently dropped. hook_pane finds the pane anyway, or nothing:
+# updates were silently dropped. hook_pane finds the pane, or nothing:
 #   1. $TMUX_PANE, as before;
-#   2. the nearest ancestor process whose environment has it (the background
-#      session's daemon is started by the pane's own claude client);
-#   3. a pane recorded for this session id, or for one it was forked or resumed
-#      from (the hook's session_id, CLAUDE_CODE_SESSION_ID, and the
-#      --session-id / --resume values on its ancestors' command lines);
-#   4. the one pane whose @agentnav_name is the session's --name.
-# Every hook that knows its pane records session id → pane, so a later hook of
-# that session, or of a fork resumed from it, resolves in one lookup. A
-# recorded pane must still exist. Nothing found means nothing done.
+#   2. the nearest ancestor process whose environment has it, but never at or
+#      past claude's daemon (`claude daemon`, bg-pty-host, bg-spare): there is
+#      one daemon per user, and its environment holds whichever pane started
+#      it, not the pane of the session it hosts;
+#   3. a record for the session: the hook's session_id, CLAUDE_CODE_SESSION_ID,
+#      or a --session-id on its own processes (below the daemon). Failing
+#      those, a --resume origin: a fork is assumed to live in its origin's pane,
+#      unless that pane already belongs to another session (@agentnav_session).
+# Hooks that know their pane record session id -> pane, and `agentnav.sh bind`
+# records one by hand. A record names its tmux server by pid and the pane's
+# agent name, and is used only while both still match (a pane id can come back
+# on a restarted server). Nothing found means nothing done.
 HOOK_JSON=""
 hook_read() { [ -t 0 ] || HOOK_JSON="$(timeout 2 cat 2>/dev/null)"; return 0; }
 hook_field() { [[ $HOOK_JSON =~ \"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && printf '%s' "${BASH_REMATCH[1]}"; }
 sessions_dir() { local b="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"; printf '%s/agentnav-sessions' "${b%/}"; }
+valid_id() { [[ ${1:-} =~ ^[A-Za-z0-9_-]+$ ]]; }
+# Record ids for $TMUX_PANE: "<socket> <server pid> <pane> <agent name>".
 remember_session() {
-  local dir
-  [[ ${1:-} =~ ^[A-Za-z0-9_-]+$ ]] && [ -n "${TMUX:-}" ] || return 0
+  local dir id server name
+  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 0
+  read -r server name < <(tmux display -p -t "$TMUX_PANE" '#{pid} #{@agentnav_name}' 2>/dev/null)
+  [ -n "$server" ] || return 0
   dir="$(sessions_dir)"
   private_dir "$dir" 2>/dev/null || return 0
-  printf '%s %s\n' "${TMUX%%,*}" "$TMUX_PANE" >"$dir/$1"
+  for id in "$@"; do
+    valid_id "$id" && printf '%s %s %s %s\n' "${TMUX%%,*}" "$server" "$TMUX_PANE" "$name" >"$dir/$id"
+  done
 }
-# "<parent pid>" and the NUL-separated command line / environment of a process.
+# The pane its owning session stamps, so a fork can tell it's taken.
+claim_pane() { valid_id "${1:-}" && tmux set -p -t "$TMUX_PANE" @agentnav_session "$1" 2>/dev/null; return 0; }
+# Is a record ("<socket> <server pid> <pane> <name>") still that pane? Sets REC_SOCK/REC_PANE.
+record_ok() {
+  local sock server pane name now_server now_name
+  valid_id "$1" && [ -f "$(sessions_dir)/$1" ] || return 1
+  read -r sock server pane name <"$(sessions_dir)/$1"
+  [ -n "$pane" ] && [ -n "$server" ] || return 1
+  read -r now_server now_name < <(TMUX="$sock,0,0" tmux display -p -t "$pane" '#{pid} #{@agentnav_name}' 2>/dev/null)
+  [ "$now_server" = "$server" ] && [ "$now_name" = "$name" ] || return 1
+  REC_SOCK="$sock" REC_PANE="$pane"
+}
 proc_ppid() {
   local stat
   if [ -r "/proc/$1/stat" ]; then stat="$(<"/proc/$1/stat")"; stat="${stat##*) }"; set -- $stat; echo "$2"
@@ -437,45 +457,62 @@ proc_ppid() {
 }
 proc_args() { if [ -r "/proc/$1/cmdline" ]; then tr '\0' '\n' <"/proc/$1/cmdline"; else ps -o command= -p "$1" 2>/dev/null | tr ' ' '\n'; fi; }
 proc_env() { [ -r "/proc/$1/environ" ] && tr '\0' '\n' <"/proc/$1/environ"; }
+# claude's daemon and its per-session hosts: shared, so nothing at or above them counts.
+is_claude_host() { grep -qxE 'daemon|bg-pty-host|--bg-pty-host|bg-spare|--bg-spare' <<<"$1"; }
 hook_pane() {
-  local sid p env pane sock args id entry name="" ids=() names=() matches
+  local sid p env pane sock args id owner own=() origins=()
   sid="$(hook_field session_id)"
-  if [ -n "${TMUX_PANE:-}" ]; then remember_session "$sid"; return 0; fi
-  ids=("$sid" "${CLAUDE_CODE_SESSION_ID:-}")
+  if [ -n "${TMUX_PANE:-}" ]; then remember_session "$sid"; claim_pane "$sid"; return 0; fi
+  own=("$sid" "${CLAUDE_CODE_SESSION_ID:-}")
   p="$PPID"
   while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+    args="$(proc_args "$p")"
+    is_claude_host "$args" && break
     env="$(proc_env "$p")"
     pane="$(sed -n 's/^TMUX_PANE=//p' <<<"$env")"
     sock="$(sed -n 's/^TMUX=//p' <<<"$env")"
     if [ -n "$pane" ] && [ -n "$sock" ] && TMUX="$sock" alive "$pane"; then
       export TMUX="$sock" TMUX_PANE="$pane"
-      for id in "${ids[@]}"; do remember_session "$id"; done
+      remember_session "${own[@]}"
+      claim_pane "$sid"
       return 0
     fi
-    args="$(proc_args "$p")"
-    while IFS= read -r id; do ids+=("$id"); done < <(awk 'prev == "--session-id" || prev == "--resume" { sub(/.*\//, ""); sub(/\.jsonl$/, ""); print } { prev = $0 }' <<<"$args")
-    name="$(awk 'prev == "--name" { print; exit } { prev = $0 }' <<<"$args")"
-    [ -n "$name" ] && names+=("$name")
+    while IFS= read -r id; do own+=("$id"); done < <(awk 'prev == "--session-id" { print } { prev = $0 }' <<<"$args")
+    while IFS= read -r id; do origins+=("$id"); done < <(awk 'prev == "--resume" { sub(/.*\//, ""); sub(/\.jsonl$/, ""); print } { prev = $0 }' <<<"$args")
     p="$(proc_ppid "$p")"
   done
-  for id in "${ids[@]}"; do
-    [[ $id =~ ^[A-Za-z0-9_-]+$ ]] && [ -f "$(sessions_dir)/$id" ] || continue
-    read -r sock pane <"$(sessions_dir)/$id"
-    if TMUX="$sock,0,0" alive "$pane"; then
-      export TMUX="$sock,0,0" TMUX_PANE="$pane"
-      remember_session "$sid"
+  for id in "${own[@]}"; do
+    if record_ok "$id"; then
+      export TMUX="$REC_SOCK,0,0" TMUX_PANE="$REC_PANE"
+      remember_session "${own[@]}"
+      claim_pane "$sid"
       return 0
     fi
   done
-  for name in "${names[@]}"; do
-    matches="$(tmux list-panes -a -F '#{pane_id} #{@agentnav_name}' 2>/dev/null | awk -v n="$name" '$2 == n { print $1 }')"
-    if [ -n "$matches" ] && [ "$(wc -l <<<"$matches")" -eq 1 ]; then
-      export TMUX_PANE="$matches" TMUX="$(tmux display -p '#{socket_path},0,0' 2>/dev/null)"
-      remember_session "$sid"
-      return 0
-    fi
+  for id in "${origins[@]}"; do
+    record_ok "$id" || continue
+    owner="$(TMUX="$REC_SOCK,0,0" tmux show -pqv -t "$REC_PANE" @agentnav_session 2>/dev/null)"
+    # The origin's pane now belongs to some other session: don't take it over.
+    [ -z "$owner" ] || [ "$owner" = "$id" ] || printf '%s\n' "${own[@]}" | grep -qxF "$owner" || continue
+    export TMUX="$REC_SOCK,0,0" TMUX_PANE="$REC_PANE"
+    remember_session "${own[@]}"
+    claim_pane "$sid"
+    return 0
   done
   return 1
+}
+# `agentnav.sh bind <pane> [session-id]`: record a session (by default the
+# calling one, $CLAUDE_CODE_SESSION_ID) as the agent in <pane>, for sessions
+# no hook can place on their own (one moved to the background before this
+# existed). <pane> is on the server in $TMUX, or the default one.
+bind_session() {
+  local pane="$1" id="${2:-${CLAUDE_CODE_SESSION_ID:-}}"
+  valid_id "$id" || { echo "agentnav bind: no session id (pass one, or run it from the Claude session)" >&2; return 1; }
+  alive "$pane" || { echo "agentnav bind: no pane $pane" >&2; return 1; }
+  export TMUX_PANE="$pane" TMUX="${TMUX:-$(tmux display -p '#{socket_path}'),0,0}"
+  remember_session "$id"
+  claim_pane "$id"
+  echo "agentnav: session $id -> $pane ($(cat "$(sessions_dir)/$id"))"
 }
 
 touched() {
@@ -1366,6 +1403,7 @@ stop() {
 
 case "${1:-}" in
 state) hook_read && hook_pane && tmux set -p -t "$TMUX_PANE" @agentnav_state "${2:?state}" || true ;;
+bind) bind_session "${2:?pane}" "${3:-}" ;;
 start)
   use_session_of "${2:-${TMUX_PANE:?run inside tmux or pass a pane}}" && start "${2:-$TMUX_PANE}"
   ;;
